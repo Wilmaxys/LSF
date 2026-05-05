@@ -261,8 +261,10 @@ setup_smplerx_env() {
     pip install --no-cache-dir --no-build-isolation \
         'chumpy @ git+https://github.com/mattloper/chumpy'
 
-    # Reste des deps
-    pip install --no-cache-dir -r "$env_dir/requirements.txt"
+    # Reste des deps — --no-build-isolation pour que les setup.py qui importent
+    # pkg_resources (mmcv 1.3.9, mmdet 2.26, etc.) trouvent le setuptools<70 de l'env
+    # plutôt que celui (>=81) de l'overlay PEP 517.
+    pip install --no-cache-dir --no-build-isolation -r "$env_dir/requirements.txt"
 
     # Clone SMPLer-X au commit pinned
     if [[ ! -d "$repo_dir" ]]; then
@@ -314,7 +316,8 @@ setup_hamer_env() {
     pip install --no-cache-dir --no-build-isolation \
         'chumpy @ git+https://github.com/mattloper/chumpy'
 
-    pip install --no-cache-dir -r "$env_dir/requirements.txt"
+    # --no-build-isolation : voir commentaire dans setup_smplerx_env (pkg_resources / setuptools<70)
+    pip install --no-cache-dir --no-build-isolation -r "$env_dir/requirements.txt"
 
     # Clone HaMeR au commit pinned
     if [[ ! -d "$repo_dir" ]]; then
@@ -373,7 +376,8 @@ setup_emoca_env() {
         'git+https://github.com/facebookresearch/pytorch3d.git@v0.6.2' \
         || warn "    pytorch3d build failed — voir docs/TROUBLESHOOTING.md"
 
-    pip install --no-cache-dir -r "$env_dir/requirements.txt"
+    # --no-build-isolation : voir commentaire dans setup_smplerx_env
+    pip install --no-cache-dir --no-build-isolation -r "$env_dir/requirements.txt"
 
     # Clone EMOCA branche release/EMOCA_v2
     if [[ ! -d "$repo_dir" ]]; then
