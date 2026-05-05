@@ -256,6 +256,11 @@ setup_smplerx_env() {
         mmcv-full==1.7.1 \
         -f https://download.openmmlab.com/mmcv/dist/cu113/torch1.12/index.html
 
+    # chumpy : son setup.py fait `import pip` — il faut désactiver l'isolation de build
+    # pour qu'il voie le pip de l'env (sinon ModuleNotFoundError au build).
+    pip install --no-cache-dir --no-build-isolation \
+        'chumpy @ git+https://github.com/mattloper/chumpy'
+
     # Reste des deps
     pip install --no-cache-dir -r "$env_dir/requirements.txt"
 
@@ -304,6 +309,10 @@ setup_hamer_env() {
     pip install --no-cache-dir 'setuptools<70' wheel
     pip install --no-cache-dir --no-build-isolation \
         'git+https://github.com/facebookresearch/detectron2.git'
+
+    # chumpy : setup.py fait `import pip` — pas d'isolation de build.
+    pip install --no-cache-dir --no-build-isolation \
+        'chumpy @ git+https://github.com/mattloper/chumpy'
 
     pip install --no-cache-dir -r "$env_dir/requirements.txt"
 
