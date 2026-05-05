@@ -1,0 +1,99 @@
+# Configuration centrale du pipeline LSF.
+# Tous les champs sont surchargeables par les arguments CLI de pipeline.py.
+
+pipeline:
+  # fps de sortie après ré-échantillonnage de la vidéo source
+  output_fps: 30
+
+  # Modèle SMPLer-X à utiliser. Options : s32, b32, l32, h32, h32_correct (recommandé)
+  smplerx_model: h32_correct
+
+  # Si True, la position des mains de SMPLer-X est remplacée par celle de HaMeR
+  use_hamer_for_hands: true
+
+  # Si True, jaw_pose et expression sont remplacés par EMOCA
+  use_emoca_for_face: true
+
+  # Nombre de coefficients d'expression FLAME à conserver (défaut EMOCA = 50)
+  num_expression_coeffs: 50
+
+  # Nombre de coefficients de forme β SMPL-X (10 par défaut, jusqu'à 300)
+  num_betas: 10
+
+  # SMPLer-X retient une seule détection par frame ; "largest" = la bbox la plus grande
+  # Alternatives : "center" (la plus proche du centre), "track:<id>" (suivi d'identité)
+  person_selection: largest
+
+
+# Filtre One-Euro de lissage temporel (cf. https://gery.casiez.net/1euro/).
+# Tuner empiriquement : fixer beta=0, baisser min_cutoff jusqu'à éliminer le jitter ;
+# puis remonter beta jusqu'à éliminer le retard sur les mouvements rapides.
+smoothing:
+  enabled: true
+
+  # Translation racine (mouvement lent)
+  transl:
+    min_cutoff: 0.5
+    beta: 0.05
+
+  # Articulations du corps
+  body:
+    min_cutoff: 1.0
+    beta: 0.1
+
+  # Mains (mouvements plus rapides en signation, plus de bruit)
+  hands:
+    min_cutoff: 1.5
+    beta: 0.2
+
+  # Mâchoire, yeux, expression faciale
+  face:
+    min_cutoff: 1.5
+    beta: 0.1
+
+
+# Calcul de la confidence par frame (proxy : SMPLer-X n'en sort pas nativement).
+confidence:
+  # Pondérations dans le score combiné
+  bbox_score_weight: 0.5      # score brut du détecteur
+  reprojection_weight: 0.5    # 1 - distance(reprojection 2D, keypoints 2D) normalisée
+
+  # Seuil sous lequel une frame est considérée "douteuse" (visualisée en rouge dans
+  # le debug overlay). N'affecte pas le NPZ produit, juste le rendu de debug.
+  warn_threshold: 0.5
+
+
+# Debug overlay : génère une vidéo .mp4 supplémentaire avec mesh superposé.
+debug_overlay:
+  enabled: false  # activé via --debug-overlay
+  mesh_alpha: 0.5
+  mesh_color: [0, 200, 0]   # RGB (0-255)
+  highlight_low_confidence: true  # surligne en rouge les frames sous warn_threshold
+
+
+# Chemins par défaut (relatifs à la racine du repo).
+paths:
+  # Dossiers de données utilisateur
+  input_dir: data/input
+  output_dir: data/output
+
+  # Dossier des poids ML
+  models_dir: pipeline/models
+
+  # Sous-dossiers des envs Python par modèle
+  envs_dir: pipeline/envs
+
+  # Binaires Python par env (créés par setup.sh)
+  python_smplerx: pipeline/envs/smplerx/venv/bin/python
+  python_hamer: pipeline/envs/hamer/venv/bin/python
+  python_emoca: pipeline/envs/emoca/venv/bin/python
+
+  # Binaire Blender (résolu via $PATH si absent)
+  blender_bin: blender
+
+
+# Logging.
+logging:
+  level: INFO  # DEBUG | INFO | WARNING | ERROR
+  format: "[%(asctime)s] %(levelname)s %(name)s: %(message)s"
+  datefmt: "%Y-%m-%d %H:%M:%S"

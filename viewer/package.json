@@ -1,0 +1,23 @@
+{
+  "name": "lsf-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Viewer Three.js pour les animations LSF sur avatars VRM",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "three": "~0.180.0",
+    "@pixiv/three-vrm": "^3.5.2",
+    "@pixiv/three-vrm-animation": "^3.5.2"
+  },
+  "devDependencies": {
+    "@types/three": "~0.180.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.10"
+  }
+}

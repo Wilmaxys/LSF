@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual envs ML pipeline
+pipeline/envs/*/venv/
+pipeline/envs/*/.venv/
+
+# Repos ML clonés (volumineux, recréés par scripts/setup.sh)
+pipeline/envs/*/repo/
+.tools/
+.research/
+
+# Modèles ML (jamais versionnés — trop lourds, licences restrictives)
+pipeline/models/*
+!pipeline/models/README.md
+!pipeline/models/CHECKSUMS.sha256
+
+# Données utilisateur
+data/input/*
+data/output/*
+!data/input/.gitkeep
+!data/output/.gitkeep
+
+# Fixtures de test (binaires)
+pipeline/tests/fixtures/*
+!pipeline/tests/fixtures/README.md
+!pipeline/tests/fixtures/.gitkeep
+
+# Avatars et animations dans le viewer (sample seulement)
+viewer/public/avatars/*
+viewer/public/animations/*
+!viewer/public/avatars/.gitkeep
+!viewer/public/animations/.gitkeep
+!viewer/public/avatars/README.md
+
+# Node
+viewer/node_modules/
+viewer/dist/
+viewer/.vite/
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Scratchpads / brouillons
+scratch/
+TODO.local.md

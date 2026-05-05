@@ -1,0 +1,15 @@
+# Dépendances de l'orchestrateur (pure-Python, sans torch).
+# Ces dépendances sont aussi installables sur Mac pour le développement.
+# Les dépendances ML par modèle sont dans pipeline/envs/{smplerx,hamer,emoca}/requirements.txt.
+
+numpy>=1.21,<1.24       # cap sous 1.24 — chumpy (deps ML) utilise np.bool/np.float
+scipy>=1.10,<2
+opencv-python-headless>=4.8,<5  # version headless : pas de Qt/GTK ; convient à un serveur sans GUI
+pyyaml>=6.0,<7
+pygltflib>=1.16,<2
+tqdm>=4.65,<5
+
+# Test / lint (dev only)
+pytest>=7,<9
+pytest-cov>=4,<7
+ruff>=0.5,<1

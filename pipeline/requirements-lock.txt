@@ -1,0 +1,18 @@
+# Versions exactes utilisées au moment du dev/test de l'orchestrateur.
+# Régénérer avec : pip-compile pipeline/requirements.txt --output-file pipeline/requirements-lock.txt
+# (pip-tools : pip install pip-tools)
+#
+# IMPORTANT : ce fichier doit être régénéré sur Ubuntu 22.04 / Python 3.10
+# avant de figer le pipeline en production. Les versions ci-dessous sont
+# illustratives et seront mises à jour à la Phase 3 sur la machine cible.
+
+# Pinned via pip-compile (placeholder)
+numpy==1.23.5
+scipy==1.11.4
+opencv-python-headless==4.8.1.78
+pyyaml==6.0.1
+pygltflib==1.16.2
+tqdm==4.66.1
+pytest==8.3.3
+pytest-cov==5.0.0
+ruff==0.6.9

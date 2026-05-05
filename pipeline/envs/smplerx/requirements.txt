@@ -1,0 +1,45 @@
+# Env Python pour SMPLer-X.
+# Python 3.8 imposé. Cf. docs/PIPELINE.md §1.1.
+#
+# IMPORTANT : PyTorch et mmcv-full ne sont PAS installables via pip seul.
+# Voir scripts/setup.sh pour la procédure exacte (conda + wheel openmmlab).
+#
+# 1) PyTorch 1.12.0 + cu113 — installé séparément via conda/pip torch wheel
+# 2) mmcv-full 1.7.1 — installé via wheel openmmlab cu113/torch1.12
+# 3) Le reste ci-dessous
+
+mmdet==2.26.0
+smplx==0.1.28
+chumpy @ git+https://github.com/mattloper/chumpy
+
+numpy>=1.21,<1.24
+scipy
+scikit-image
+scikit-learn
+tqdm
+yacs
+numba
+opencv-python
+tensorboardx
+filterpy
+Cython
+Pillow
+trimesh
+pyrender
+matplotlib
+json_tricks
+torchgeometry
+einops
+joblib
+boto3
+requests
+easydict
+pycocotools
+plyfile
+timm
+pyglet
+
+# Pure-Python utils communs (dupliqués depuis pipeline/requirements.txt
+# pour rester self-contained dans cet env)
+pyyaml>=6.0,<7
+pygltflib>=1.16,<2

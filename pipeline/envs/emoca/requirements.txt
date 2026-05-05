@@ -1,0 +1,27 @@
+# Env Python pour EMOCA v2.
+# Python 3.8 imposé. Cf. docs/PIPELINE.md §1.1.
+#
+# IMPORTANT : EMOCA a un ENV file conda complet (conda-environment_py38_cu11_ubuntu.yml)
+# qui couvre la majeure partie des dépendances. Cf. scripts/setup.sh pour la procédure
+# exacte (mamba create -f le yml d'EMOCA, puis pip install les manquants).
+#
+# 1) PyTorch 1.12.1 + cu113 — depuis le yml conda d'EMOCA
+# 2) PyTorch3D 0.6.2 — pip install git+https://github.com/facebookresearch/pytorch3d.git@v0.6.2
+# 3) Cython 0.29.14 — séparément (le requirements d'EMOCA est buggué)
+# 4) Le reste vient du yml conda d'EMOCA. Les overrides ci-dessous sont nos pins.
+
+# Override pins explicites pour éviter les drifts
+Cython==0.29.14
+kornia==0.6.5
+pyrender==0.1.45
+opencv-python~=4.5.1.48
+moviepy==1.0.1
+ffmpeg-python==0.2.0
+transformers==4.11.3
+multidict==5.1.0
+mediapipe
+
+numpy>=1.21,<1.24
+pyyaml>=6.0,<7
+pygltflib>=1.16,<2
+tqdm
