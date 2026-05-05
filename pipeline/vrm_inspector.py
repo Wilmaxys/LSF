@@ -90,7 +90,15 @@ def inspect(vrm_path: str | Path) -> VRMMetadata:
     if not vrm_path.exists():
         raise FileNotFoundError(f"VRM introuvable : {vrm_path}")
 
-    gltf = GLTF2().load(str(vrm_path))
+    # pygltflib choisit text/binary via l'extension : .glb → binaire, sinon JSON.
+    # Les fichiers .vrm sont en réalité du GLB binaire (magic "glTF"). On détecte
+    # via les premiers octets et on appelle directement le bon loader.
+    with open(vrm_path, "rb") as f:
+        magic = f.read(4)
+    if magic == b"glTF":
+        gltf = GLTF2().load_binary(str(vrm_path))
+    else:
+        gltf = GLTF2().load_json(str(vrm_path))
     extensions = gltf.extensions or {}
 
     # VRM 1.0 ?

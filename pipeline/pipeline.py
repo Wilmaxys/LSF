@@ -35,6 +35,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Permet l'invocation directe `python pipeline/pipeline.py …` en plus de
+# `python -m pipeline.pipeline …`. Sans ça, `pipeline/` est ajouté à sys.path
+# au lieu du repo root, et l'import `from pipeline.X` échoue.
+if __name__ == "__main__" and __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from pipeline.animation_npz import Animation
 from pipeline.config import (
     REPO_ROOT, deep_merge, load_config, resolve_path, setup_logging,
