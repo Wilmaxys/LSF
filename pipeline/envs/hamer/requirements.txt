@@ -17,7 +17,8 @@ pytorch-lightning
 scikit-image
 smplx==0.1.28
 yacs
-chumpy @ git+https://github.com/mattloper/chumpy
+# chumpy : installé séparément par scripts/setup.sh avec --no-build-isolation
+# (son setup.py fait `import pip` qui plante avec l'isolation PEP 517)
 timm
 einops
 xtcocotools

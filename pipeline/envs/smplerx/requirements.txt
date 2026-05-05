@@ -10,7 +10,8 @@
 
 mmdet==2.26.0
 smplx==0.1.28
-chumpy @ git+https://github.com/mattloper/chumpy
+# chumpy : installé séparément par scripts/setup.sh avec --no-build-isolation
+# (son setup.py fait `import pip` qui plante avec l'isolation PEP 517)
 
 numpy>=1.21,<1.24
 scipy
