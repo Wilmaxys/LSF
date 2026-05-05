@@ -240,6 +240,9 @@ setup_smplerx_env() {
     conda activate "$env_name"
     # conda-forge récent n'installe pas pip par défaut — on garantit qu'il est dans l'env
     [[ -x "$CONDA_DIR/envs/$env_name/bin/pip" ]] || conda install -y -n "$env_name" pip
+    # setuptools<70 : torch 1.12's cpp_extension.py fait `from pkg_resources import packaging`,
+    # or pkg_resources a été retiré en setuptools 81+.
+    pip install --no-cache-dir 'setuptools<70' wheel
 
     # Torch 1.12.0 + cu113 (cf. PIPELINE.md §1.1)
     pip install --no-cache-dir \
@@ -297,7 +300,8 @@ setup_hamer_env() {
 
     # detectron2 — son setup.py importe torch au build, on désactive l'isolation
     # de build pour qu'il voie le torch déjà installé dans l'env.
-    pip install --no-cache-dir setuptools wheel
+    # setuptools<81 : pkg_resources a été retiré en 81 mais torch 1.13's cpp_extension.py l'importe.
+    pip install --no-cache-dir 'setuptools<70' wheel
     pip install --no-cache-dir --no-build-isolation \
         'git+https://github.com/facebookresearch/detectron2.git'
 
@@ -353,8 +357,9 @@ setup_emoca_env() {
 
     # PyTorch3D 0.6.2 build depuis source (étape la plus fragile)
     # Idem detectron2 : son setup.py importe torch — pas d'isolation de build.
+    # setuptools<70 pour la même raison qu'au-dessus (pkg_resources requis par torch 1.12).
     log "    Build pytorch3d 0.6.2 depuis source (peut prendre 10 min)…"
-    pip install --no-cache-dir setuptools wheel
+    pip install --no-cache-dir 'setuptools<70' wheel
     pip install --no-cache-dir --no-build-isolation \
         'git+https://github.com/facebookresearch/pytorch3d.git@v0.6.2' \
         || warn "    pytorch3d build failed — voir docs/TROUBLESHOOTING.md"
