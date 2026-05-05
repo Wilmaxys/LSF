@@ -49,28 +49,11 @@ step_0_preflight() {
         warn "OS non-Ubuntu/Fedora détecté — l'installation peut échouer"
     fi
 
-    # sudo
-    if ! sudo -v; then
-        fail "sudo requis. Lance : sudo -v puis relance ce script."
-    fi
-
-    # GPU NVIDIA
-    if ! command -v nvidia-smi &>/dev/null; then
-        fail "nvidia-smi introuvable. Driver NVIDIA non installé ?"
-    fi
-
-    DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1)
-    log "  Driver NVIDIA : $DRIVER_VERSION"
-    DRIVER_MAJOR=$(echo "$DRIVER_VERSION" | cut -d. -f1)
-    if [[ "$DRIVER_MAJOR" -lt 525 ]]; then
-        warn "Driver NVIDIA $DRIVER_VERSION < 525 — recommandé pour CUDA 12.x ; vérifie compat torch"
-    fi
-
-    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
-    GPU_MEM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1)
-    log "  GPU : $GPU_NAME ($GPU_MEM MiB)"
-    if [[ "$GPU_MEM" -lt 16000 ]]; then
-        warn "GPU < 16 GiB de VRAM — SMPLer-X H32 peut échouer en OOM. Option : utiliser le variant L32."
+    # sudo (skip si root)
+    if [[ $EUID -ne 0 ]]; then
+        if ! sudo -v; then
+            fail "sudo requis. Lance : sudo -v puis relance ce script."
+        fi
     fi
 
     # Disque dispo (besoin minimal ~50 GB pour modèles + envs + Blender)
