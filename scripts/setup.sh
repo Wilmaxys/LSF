@@ -258,8 +258,10 @@ setup_smplerx_env() {
 
     # chumpy : son setup.py fait `import pip` — il faut désactiver l'isolation de build
     # pour qu'il voie le pip de l'env (sinon ModuleNotFoundError au build).
-    pip install --no-cache-dir --no-build-isolation \
-        'chumpy @ git+https://github.com/mattloper/chumpy'
+    if ! python -c "import chumpy" &>/dev/null; then
+        pip install --no-cache-dir --no-build-isolation \
+            'chumpy @ git+https://github.com/mattloper/chumpy'
+    fi
 
     # Reste des deps — --no-build-isolation pour que les setup.py qui importent
     # pkg_resources (mmcv 1.3.9, mmdet 2.26, etc.) trouvent le setuptools<70 de l'env
@@ -309,8 +311,10 @@ setup_hamer_env() {
     # de build pour qu'il voie le torch déjà installé dans l'env.
     # setuptools<81 : pkg_resources a été retiré en 81 mais torch 1.13's cpp_extension.py l'importe.
     pip install --no-cache-dir 'setuptools<70' wheel
-    pip install --no-cache-dir --no-build-isolation \
-        'git+https://github.com/facebookresearch/detectron2.git'
+    if ! python -c "import detectron2" &>/dev/null; then
+        pip install --no-cache-dir --no-build-isolation \
+            'git+https://github.com/facebookresearch/detectron2.git'
+    fi
 
     # chumpy : setup.py fait `import pip` — pas d'isolation de build.
     pip install --no-cache-dir --no-build-isolation \
@@ -370,21 +374,36 @@ setup_emoca_env() {
     # PyTorch3D 0.6.2 build depuis source (étape la plus fragile)
     # Idem detectron2 : son setup.py importe torch — pas d'isolation de build.
     # setuptools<70 pour la même raison qu'au-dessus (pkg_resources requis par torch 1.12).
-    log "    Build pytorch3d 0.6.2 depuis source (peut prendre 10 min)…"
     pip install --no-cache-dir 'setuptools<70' wheel
-    pip install --no-cache-dir --no-build-isolation \
-        'git+https://github.com/facebookresearch/pytorch3d.git@v0.6.2' \
-        || warn "    pytorch3d build failed — voir docs/TROUBLESHOOTING.md"
+    if python -c "import pytorch3d" &>/dev/null; then
+        ok "    pytorch3d déjà installé — skip rebuild"
+    else
+        log "    Build pytorch3d 0.6.2 depuis source (peut prendre 10 min)…"
+        pip install --no-cache-dir --no-build-isolation \
+            'git+https://github.com/facebookresearch/pytorch3d.git@v0.6.2' \
+            || warn "    pytorch3d build failed — voir docs/TROUBLESHOOTING.md"
+    fi
 
     # --no-build-isolation : voir commentaire dans setup_smplerx_env
     pip install --no-cache-dir --no-build-isolation -r "$env_dir/requirements.txt"
 
-    # Clone EMOCA branche release/EMOCA_v2
-    if [[ ! -d "$repo_dir" ]]; then
+    # Clone EMOCA — sans --recursive pour découpler les submodules du clone.
+    # Certains commits pinned dans les submodules upstream ont disparu (force-push),
+    # on les init en best-effort avec fallback sur HEAD courant.
+    if [[ ! -d "$repo_dir/.git" ]]; then
         log "    Clone EMOCA…"
-        git clone --recursive https://github.com/radekd91/emoca.git "$repo_dir"
+        git clone https://github.com/radekd91/emoca.git "$repo_dir"
         (cd "$repo_dir" && git checkout e0be0dbc2d32629ae384ae10c0b7974948c994fd)
     fi
+
+    log "    Init submodules EMOCA (best-effort)…"
+    if ! (cd "$repo_dir" && git submodule update --init --recursive); then
+        warn "    Commit submodule introuvable upstream (probablement Deep3DFaceRecon)."
+        warn "    Fallback : on prend HEAD courant de chaque submodule au lieu du commit pinné."
+        (cd "$repo_dir" && git submodule update --init --recursive --remote) \
+            || warn "    Submodule init partiel — voir docs/TROUBLESHOOTING.md si la pipeline échoue."
+    fi
+
     pip install --no-build-isolation -e "$repo_dir"
 
     local conda_python
