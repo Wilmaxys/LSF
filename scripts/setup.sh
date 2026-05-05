@@ -295,8 +295,11 @@ setup_hamer_env() {
         torchvision==0.14.1+cu117 \
         --extra-index-url https://download.pytorch.org/whl/cu117
 
-    # detectron2 from git
-    pip install --no-cache-dir 'git+https://github.com/facebookresearch/detectron2.git'
+    # detectron2 — son setup.py importe torch au build, on désactive l'isolation
+    # de build pour qu'il voie le torch déjà installé dans l'env.
+    pip install --no-cache-dir setuptools wheel
+    pip install --no-cache-dir --no-build-isolation \
+        'git+https://github.com/facebookresearch/detectron2.git'
 
     pip install --no-cache-dir -r "$env_dir/requirements.txt"
 
@@ -307,11 +310,11 @@ setup_hamer_env() {
         (cd "$repo_dir" && git checkout 3a01849f4148352e9260b69bf28b65d1671a4905)
     fi
 
-    # Install ViTPose vendored dans le repo
+    # Install ViTPose vendored dans le repo (no-build-isolation au cas où)
     if [[ -d "$repo_dir/third-party/ViTPose" ]]; then
-        pip install -e "$repo_dir/third-party/ViTPose"
+        pip install --no-build-isolation -e "$repo_dir/third-party/ViTPose"
     fi
-    pip install -e "$repo_dir"
+    pip install --no-build-isolation -e "$repo_dir"
 
     local conda_python
     conda_python="$(conda info --base)/envs/$env_name/bin/python"
@@ -349,8 +352,11 @@ setup_emoca_env() {
     pip install --no-cache-dir Cython==0.29.14
 
     # PyTorch3D 0.6.2 build depuis source (étape la plus fragile)
+    # Idem detectron2 : son setup.py importe torch — pas d'isolation de build.
     log "    Build pytorch3d 0.6.2 depuis source (peut prendre 10 min)…"
-    pip install --no-cache-dir 'git+https://github.com/facebookresearch/pytorch3d.git@v0.6.2' \
+    pip install --no-cache-dir setuptools wheel
+    pip install --no-cache-dir --no-build-isolation \
+        'git+https://github.com/facebookresearch/pytorch3d.git@v0.6.2' \
         || warn "    pytorch3d build failed — voir docs/TROUBLESHOOTING.md"
 
     pip install --no-cache-dir -r "$env_dir/requirements.txt"
@@ -361,7 +367,7 @@ setup_emoca_env() {
         git clone --recursive https://github.com/radekd91/emoca.git "$repo_dir"
         (cd "$repo_dir" && git checkout e0be0dbc2d32629ae384ae10c0b7974948c994fd)
     fi
-    pip install -e "$repo_dir"
+    pip install --no-build-isolation -e "$repo_dir"
 
     local conda_python
     conda_python="$(conda info --base)/envs/$env_name/bin/python"
