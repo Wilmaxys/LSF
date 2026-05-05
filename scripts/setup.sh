@@ -166,10 +166,12 @@ step_3_blender() {
     fi
 
     # Installation du VRM addon
+    # Note : le nom du fichier release utilise des underscores (ex. 3_27_0), pas des points.
     log "  Installation VRM addon v$VRM_ADDON_VERSION…"
-    local addon_url="https://github.com/saturday06/VRM-Addon-for-Blender/releases/download/v${VRM_ADDON_VERSION}/VRM_Addon_for_Blender-${VRM_ADDON_VERSION}.zip"
+    local version_underscore="${VRM_ADDON_VERSION//./_}"
+    local addon_url="https://github.com/saturday06/VRM-Addon-for-Blender/releases/download/v${VRM_ADDON_VERSION}/VRM_Addon_for_Blender-${version_underscore}.zip"
     local addon_zip="$REPO_ROOT/.tools/vrm_addon.zip"
-    wget -q "$addon_url" -O "$addon_zip" || fail "Téléchargement VRM addon échoué"
+    wget -q "$addon_url" -O "$addon_zip" || fail "Téléchargement VRM addon échoué — URL: $addon_url"
 
     "$BLENDER_BIN" --background --python-expr "
 import bpy
