@@ -173,21 +173,38 @@ step_3_blender() {
     local addon_zip="$REPO_ROOT/.tools/vrm_addon.zip"
     wget -q "$addon_url" -O "$addon_zip" || fail "Téléchargement VRM addon échoué — URL: $addon_url"
 
+    # Le nom du module varie selon la version (io_scene_vrm vs VRM_Addon_for_Blender-release).
+    # On installe puis on auto-détecte le module pour l'activer.
     "$BLENDER_BIN" --background --python-expr "
-import bpy
+import bpy, addon_utils, sys
 bpy.ops.preferences.addon_install(filepath='$addon_zip', overwrite=True)
-bpy.ops.preferences.addon_enable(module='io_scene_vrm')
+addon_utils.modules_refresh()
+vrm_modules = [m.__name__ for m in addon_utils.modules() if 'vrm' in m.__name__.lower()]
+if not vrm_modules:
+    sys.stderr.write('FAIL: aucun module VRM trouvé après install\n')
+    sys.exit(1)
+vrm_module = vrm_modules[0]
+print(f'Enabling VRM module: {vrm_module}')
+bpy.ops.preferences.addon_enable(module=vrm_module)
 bpy.ops.wm.save_userpref()
-print('VRM addon installé et activé')
+print(f'VRM addon installé et activé: {vrm_module}')
 " || fail "Installation VRM addon dans Blender a échoué"
 
     rm -f "$addon_zip"
 
-    # Smoke test addon en headless
+    # Smoke test addon en headless — vérifie réellement le chargement
     log "  Smoke test VRM addon en headless…"
-    "$BLENDER_BIN" --background --addons io_scene_vrm \
-        --python-expr "import bpy; print('OK addon VRM chargé en headless')" \
-        || fail "L'addon VRM ne se charge pas en mode headless"
+    "$BLENDER_BIN" --background --python-expr "
+import addon_utils, sys
+vrm_modules = [m.__name__ for m in addon_utils.modules() if 'vrm' in m.__name__.lower()]
+if not vrm_modules:
+    sys.stderr.write('FAIL: module VRM introuvable\n'); sys.exit(1)
+vrm_module = vrm_modules[0]
+_default, loaded = addon_utils.check(vrm_module)
+if not loaded:
+    sys.stderr.write(f'FAIL: VRM addon {vrm_module} non chargé\n'); sys.exit(1)
+print(f'OK addon VRM chargé en headless: {vrm_module}')
+" || fail "L'addon VRM ne se charge pas en mode headless"
 
     ok "Blender + VRM addon OK"
 }
@@ -218,9 +235,11 @@ setup_smplerx_env() {
     if conda env list | awk '{print $1}' | grep -qx "$env_name"; then
         warn "    Env $env_name existe déjà — skip création"
     else
-        conda create -y -n "$env_name" python=3.8
+        conda create -y -n "$env_name" python=3.8 pip
     fi
     conda activate "$env_name"
+    # conda-forge récent n'installe pas pip par défaut — on garantit qu'il est dans l'env
+    [[ -x "$CONDA_DIR/envs/$env_name/bin/pip" ]] || conda install -y -n "$env_name" pip
 
     # Torch 1.12.0 + cu113 (cf. PIPELINE.md §1.1)
     pip install --no-cache-dir \
@@ -265,9 +284,10 @@ setup_hamer_env() {
     if conda env list | awk '{print $1}' | grep -qx "$env_name"; then
         warn "    Env $env_name existe déjà — skip création"
     else
-        conda create -y -n "$env_name" python=3.10
+        conda create -y -n "$env_name" python=3.10 pip
     fi
     conda activate "$env_name"
+    [[ -x "$CONDA_DIR/envs/$env_name/bin/pip" ]] || conda install -y -n "$env_name" pip
 
     # Torch ≤ 1.13 (mmcv 1.3.9 ne supporte pas torch 2.x)
     pip install --no-cache-dir \
@@ -313,9 +333,10 @@ setup_emoca_env() {
     if conda env list | awk '{print $1}' | grep -qx "$env_name"; then
         warn "    Env $env_name existe déjà — skip création"
     else
-        conda create -y -n "$env_name" python=3.8
+        conda create -y -n "$env_name" python=3.8 pip
     fi
     conda activate "$env_name"
+    [[ -x "$CONDA_DIR/envs/$env_name/bin/pip" ]] || conda install -y -n "$env_name" pip
 
     # Torch 1.12.1 + cu113
     pip install --no-cache-dir \
@@ -363,9 +384,10 @@ step_5_orchestrator_env() {
     if conda env list | awk '{print $1}' | grep -qx "$env_name"; then
         warn "  Env $env_name existe déjà — skip"
     else
-        conda create -y -n "$env_name" python=3.10
+        conda create -y -n "$env_name" python=3.10 pip
     fi
     conda activate "$env_name"
+    [[ -x "$CONDA_DIR/envs/$env_name/bin/pip" ]] || conda install -y -n "$env_name" pip
     pip install --no-cache-dir -r "$REPO_ROOT/pipeline/requirements.txt"
     conda deactivate
 
