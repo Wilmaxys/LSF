@@ -50,10 +50,12 @@ def load_model(weights_path: Path, model_name: str):
 
     import torch
     from main.config import cfg  # type: ignore[import-not-found]
-    from base import Demoer  # type: ignore[import-not-found]
 
-    # 1. Charger la config Python du variant — convention du repo :
-    # main/config/config_smpler_x_<size>.py (ex : config_smpler_x_h32.py).
+    # 1. Charger la config Python du variant AVANT d'importer Demoer.
+    # `from base import Demoer` déclenche `utils/human_models.py` qui exécute
+    # `smpl_x = SMPLX()` au load et lit `cfg.human_model_path` — sans cette
+    # initialisation préalable, AttributeError au moment de l'import.
+    # Convention du repo : main/config/config_smpler_x_<size>.py.
     # Le suffixe "_correct" partage la config "h32".
     config_size = model_name.replace("_correct", "")
     config_file = SMPLERX_REPO / "main" / "config" / f"config_smpler_x_{config_size}.py"
@@ -68,7 +70,8 @@ def load_model(weights_path: Path, model_name: str):
         use_cache=False,
     )
 
-    # 2. Instancier Demoer (helper interne du repo qui possède .model)
+    # 2. Maintenant que cfg.human_model_path est posé, on peut importer Demoer.
+    from base import Demoer  # type: ignore[import-not-found]
     demoer = Demoer()
     demoer._make_model()
 

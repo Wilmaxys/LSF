@@ -68,3 +68,8 @@ logs/
 # Scratchpads / brouillons
 scratch/
 TODO.local.md
+
+# Credentials locaux (jamais commités)
+.env
+.env.local
+mpi_credentials.sh

@@ -9,12 +9,22 @@
 #   4. HaMeR demo data (UT Austin, public)
 #   5. SMPL-X / SMPL / MANO / FLAME / EMOCA (MPI, **REGISTRATION REQUISE**)
 #
-# Pour les composants MPI, le script ne peut pas télécharger directement (les
-# URLs requièrent un cookie d'authentification post-login). Le script :
-#   - vérifie que les fichiers existent (téléchargés à la main)
-#   - donne les URLs et instructions claires à suivre
+# Pour les composants MPI, deux modes :
+#   - AUTO : si $MPI_EMAIL et $MPI_PASSWORD sont set, login curl + cookies,
+#            puis download depuis download.is.tue.mpg.de (commun aux 4 sites).
+#   - MANUEL : sinon, le script donne les URLs et instructions.
 #
-# Le script est idempotent : on peut le relancer après un téléchargement manuel.
+# Usage AUTO :
+#   export MPI_EMAIL='ton.email@example.com'
+#   read -s MPI_PASSWORD && export MPI_PASSWORD  # pas dans l'historique shell
+#   bash scripts/download_weights.sh
+#
+# Prérequis : un compte MPI (n'importe lequel des 4 sites) + accepter les
+# licences pour SMPL-X, SMPL, MANO, FLAME (1 clic chacune, à faire manuellement
+# en se connectant aux sites avant la 1re exécution auto).
+#
+# Le script est idempotent : on peut le relancer ; les fichiers déjà présents
+# sont sautés.
 
 set -euo pipefail
 
@@ -179,11 +189,176 @@ step_3_hamer() {
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 4. SMPL-X / SMPL / MANO / FLAME — REGISTRATION MPI REQUISE
+#
+# Deux modes selon que les credentials sont set ou pas :
+#   - $MPI_EMAIL et $MPI_PASSWORD set → auto-download via curl + cookies
+#   - sinon → mode manuel (instructions affichées)
 # ──────────────────────────────────────────────────────────────────────────────
+
+MPI_COOKIES="/tmp/lsf_mpi_cookies.txt"
+MPI_LOGIN_DONE=0
+
+# URL-encode une chaîne (pour mdp avec caractères spéciaux)
+urlencode() {
+    python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$1"
+}
+
+# Login MPI une seule fois par run.
+# Le backend download.is.tue.mpg.de est commun aux 4 sites SMPL-X/SMPL/MANO/FLAME.
+mpi_login() {
+    [[ "$MPI_LOGIN_DONE" -eq 1 ]] && return 0
+
+    if [[ -z "${MPI_EMAIL:-}" || -z "${MPI_PASSWORD:-}" ]]; then
+        return 1
+    fi
+
+    log "  Authentification MPI ($MPI_EMAIL)…"
+    rm -f "$MPI_COOKIES"
+    local email_enc password_enc
+    email_enc=$(urlencode "$MPI_EMAIL")
+    password_enc=$(urlencode "$MPI_PASSWORD")
+
+    # POST sur le endpoint de login (commun à tous les domaines MPI).
+    # Pas de --fail : le endpoint redirige souvent en 302 selon les cas.
+    curl -sSL -c "$MPI_COOKIES" -b "$MPI_COOKIES" \
+        --data "username=${email_enc}&password=${password_enc}" \
+        'https://download.is.tue.mpg.de/login.php' \
+        -o /dev/null
+
+    # Vérifie qu'on a bien un cookie de session
+    if ! grep -q 'PHPSESSID\|sessionid\|_simple_auth' "$MPI_COOKIES" 2>/dev/null; then
+        warn "  Cookie de session non récupéré — credentials probablement invalides"
+        return 1
+    fi
+    ok "  Login MPI OK"
+    MPI_LOGIN_DONE=1
+}
+
+# mpi_download DOMAIN SFILE DEST
+# Télécharge depuis download.is.tue.mpg.de avec les cookies de session.
+mpi_download() {
+    local domain="$1"
+    local sfile="$2"
+    local dest="$3"
+
+    if [[ -f "$dest" ]]; then
+        ok "  Déjà présent : $(basename "$dest")"
+        return 0
+    fi
+
+    mpi_login || { warn "  Skip (pas de login MPI) : $sfile"; return 1; }
+
+    mkdir -p "$(dirname "$dest")"
+    local url="https://download.is.tue.mpg.de/download.php?domain=${domain}&sfile=${sfile}&resume=1"
+    log "  MPI: $sfile"
+    if ! curl -fL -b "$MPI_COOKIES" -c "$MPI_COOKIES" \
+            --progress-bar "$url" -o "$dest.tmp"; then
+        rm -f "$dest.tmp"
+        warn "  Échec téléchargement : $url (licence non acceptée sur le site ?)"
+        return 1
+    fi
+
+    # Détection page de login retournée si la session a expiré (HTML, pas le binaire attendu)
+    if file "$dest.tmp" 2>/dev/null | grep -q "HTML"; then
+        rm -f "$dest.tmp"
+        warn "  La réponse est du HTML (login expired ou licence non acceptée pour ce produit)"
+        return 1
+    fi
+
+    mv "$dest.tmp" "$dest"
+    ok "  Téléchargé : $(basename "$dest") ($(du -h "$dest" | cut -f1))"
+}
+
+# Extrait un zip dans son dossier puis le supprime
+extract_and_cleanup() {
+    local zip="$1"
+    local target_dir="$2"
+    [[ -f "$zip" ]] || return 0
+    log "  Extraction $(basename "$zip")…"
+    (cd "$target_dir" && unzip -o -q "$zip") && rm -f "$zip"
+}
 
 step_4_mpi_models() {
     log "4. Modèles MPI (SMPL-X, SMPL, MANO, FLAME)…"
 
+    if [[ -n "${MPI_EMAIL:-}" && -n "${MPI_PASSWORD:-}" ]]; then
+        step_4_mpi_models_auto || step_4_mpi_models_manual
+    else
+        log "  Pas de credentials MPI_EMAIL/MPI_PASSWORD — mode manuel"
+        step_4_mpi_models_manual
+    fi
+}
+
+step_4_mpi_models_auto() {
+    log "  Mode auto (credentials détectés)"
+
+    # SMPL-X v1.1 + extension files
+    if [[ ! -f "$MODELS_DIR/smplx/SMPLX_NEUTRAL.npz" ]]; then
+        local zip="$MODELS_DIR/smplx/models_smplx_v1_1.zip"
+        mpi_download "smplx" "models_smplx_v1_1.zip" "$zip" && \
+            extract_and_cleanup "$zip" "$MODELS_DIR/smplx"
+    fi
+    if [[ ! -f "$MODELS_DIR/smplx/MANO_SMPLX_vertex_ids.pkl" ]]; then
+        mpi_download "smplx" "MANO_SMPLX_vertex_ids.pkl" \
+            "$MODELS_DIR/smplx/MANO_SMPLX_vertex_ids.pkl"
+    fi
+    if [[ ! -f "$MODELS_DIR/smplx/SMPL-X__FLAME_vertex_ids.npy" ]]; then
+        mpi_download "smplx" "SMPL-X__FLAME_vertex_ids.npy" \
+            "$MODELS_DIR/smplx/SMPL-X__FLAME_vertex_ids.npy"
+    fi
+
+    # SMPL v1.1.0 (zip contient basicmodel_*.pkl → rename)
+    if [[ ! -f "$MODELS_DIR/smpl/SMPL_NEUTRAL.pkl" ]]; then
+        local zip="$MODELS_DIR/smpl/SMPL_python_v.1.1.0.zip"
+        if mpi_download "smpl" "SMPL_python_v.1.1.0.zip" "$zip"; then
+            extract_and_cleanup "$zip" "$MODELS_DIR/smpl"
+            # Renommage basicmodel_*_v1.1.0.pkl → SMPL_*.pkl
+            for src in "$MODELS_DIR/smpl"/SMPL_python_v.1.1.0/smpl/models/basicmodel_*_lbs_10_207_0_v1.1.0.pkl; do
+                [[ -f "$src" ]] || continue
+                case "$(basename "$src")" in
+                    basicmodel_neutral_*) mv "$src" "$MODELS_DIR/smpl/SMPL_NEUTRAL.pkl" ;;
+                    basicmodel_m_*)       mv "$src" "$MODELS_DIR/smpl/SMPL_MALE.pkl" ;;
+                    basicmodel_f_*)       mv "$src" "$MODELS_DIR/smpl/SMPL_FEMALE.pkl" ;;
+                esac
+            done
+            rm -rf "$MODELS_DIR/smpl/SMPL_python_v.1.1.0"
+        fi
+    fi
+
+    # MANO
+    if [[ ! -f "$MODELS_DIR/mano/MANO_RIGHT.pkl" ]]; then
+        local zip="$MODELS_DIR/mano/mano_v1_2.zip"
+        if mpi_download "mano" "mano_v1_2.zip" "$zip"; then
+            extract_and_cleanup "$zip" "$MODELS_DIR/mano"
+            # Le zip extrait dans mano_v1_2/models/MANO_RIGHT.pkl
+            [[ -f "$MODELS_DIR/mano/mano_v1_2/models/MANO_RIGHT.pkl" ]] && \
+                mv "$MODELS_DIR/mano/mano_v1_2/models/MANO_RIGHT.pkl" "$MODELS_DIR/mano/"
+            rm -rf "$MODELS_DIR/mano/mano_v1_2"
+        fi
+    fi
+
+    # FLAME
+    if [[ ! -f "$MODELS_DIR/flame/FLAME.pkl" ]]; then
+        local zip="$MODELS_DIR/flame/FLAME2020.zip"
+        if mpi_download "flame" "FLAME2020.zip" "$zip"; then
+            extract_and_cleanup "$zip" "$MODELS_DIR/flame"
+            # FLAME 2020 livre generic_model.pkl
+            [[ -f "$MODELS_DIR/flame/generic_model.pkl" ]] && \
+                mv "$MODELS_DIR/flame/generic_model.pkl" "$MODELS_DIR/flame/FLAME.pkl"
+        fi
+    fi
+
+    # Vérif finale : si un fichier critique manque, on bascule en manuel
+    local missing=0
+    for f in "$MODELS_DIR/smplx/SMPLX_NEUTRAL.npz" \
+             "$MODELS_DIR/smpl/SMPL_NEUTRAL.pkl" \
+             "$MODELS_DIR/mano/MANO_RIGHT.pkl"; do
+        [[ -f "$f" ]] || { warn "  Manquant après auto-download : $f"; missing=1; }
+    done
+    return $missing
+}
+
+step_4_mpi_models_manual() {
     require_manual \
         "SMPL-X body models" \
         "$MODELS_DIR/smplx/SMPLX_NEUTRAL.npz" \
@@ -306,6 +481,11 @@ Lance maintenant :
 EOF
     fi
 }
+
+cleanup() {
+    rm -f "$MPI_COOKIES"
+}
+trap cleanup EXIT
 
 main() {
     step_1_smplerx
