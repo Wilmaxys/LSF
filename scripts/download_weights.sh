@@ -167,9 +167,15 @@ step_3_hamer() {
         "https://dl.fbaipublicfiles.com/detectron2/ViTDet/COCO/cascade_mask_rcnn_vitdet_h/f328730692/model_final_f05665.pkl" \
         "$dir/model_final_f05665.pkl"
 
-    # HaMeR demo_data : Google Drive (gdown) + fallback HTTP
-    if [[ ! -f "$dir/_DATA/data/checkpoints/hamer.ckpt" ]]; then
-        log "  Téléchargement HaMeR demo data (~1-2 GB)…"
+    # HaMeR demo_data — extrait dans une arbo qui varie selon les releases
+    # (ex: _DATA/, data/, ou hamer_demo_data/). On cherche hamer.ckpt n'importe
+    # où sous $dir pour décider si on doit retélécharger.
+    local existing_ckpt
+    existing_ckpt=$(find "$dir" -name "hamer.ckpt" -type f -print -quit 2>/dev/null)
+    if [[ -n "$existing_ckpt" ]]; then
+        ok "  HaMeR demo data déjà présent ($existing_ckpt)"
+    else
+        log "  Téléchargement HaMeR demo data (~5.6 GB)…"
         local tarball="$dir/hamer_demo_data.tar.gz"
         if ! wget --progress=bar:force \
                 "https://www.cs.utexas.edu/~pavlakos/hamer/data/hamer_demo_data.tar.gz" \
@@ -182,8 +188,6 @@ step_3_hamer() {
         tar -xzf "$tarball" -C "$dir"
         rm -f "$tarball"
         ok "  HaMeR demo data extrait"
-    else
-        ok "  HaMeR demo data déjà présent"
     fi
 }
 

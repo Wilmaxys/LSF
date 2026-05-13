@@ -1,0 +1,17 @@
+cd /local/private/benjamin/LSF
+git pull
+
+# 1. Sur ton compte MPI (le navigateur), va sur les 4 sites et accepte les licences
+#    une fois. C'est obligatoire (légal), le script ne peut pas le faire :
+#    https://smpl-x.is.tue.mpg.de  → Downloads → coche "I have read and agree"
+#    https://smpl.is.tue.mpg.de    → idem
+#    https://mano.is.tue.mpg.de    → idem
+#    https://flame.is.tue.mpg.de   → idem
+
+# 2. Sur le serveur, exporte tes creds (mdp lu silencieusement, pas dans l'historique) :
+export MPI_EMAIL='wilmaxys@gmail.com'
+export MPI_LOGIN='wilmaxys@gmail.com'
+read -s -p "Password MPI: " MPI_PASSWORD && export MPI_PASSWORD && echo
+
+# 3. Lance
+bash scripts/download_weights.sh
