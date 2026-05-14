@@ -204,9 +204,14 @@ def _detect_person(
     from utils.inference_utils import process_mmdet_results  # type: ignore[import-not-found]
 
     result = inference_detector(detector, frame_bgr)
-    # process_mmdet_results filtre cat_id=0 (person dans COCO) et retourne
-    # une liste de bboxes [x1, y1, x2, y2, score] en multi-person mode.
+    # process_mmdet_results filtre cat_id=0 (person dans COCO) et wrappe le
+    # résultat dans une liste extérieure (format multi-frame : (n_frame, n_human, 5)).
+    # On l'appelle frame par frame → toujours un seul élément en outer list.
     person_results = process_mmdet_results(result, cat_id=0, multi_person=True)
+    if not person_results or len(person_results) == 0:
+        return None, 0.0
+    # Dé-wrappe l'outer list (1, N, 5) → (N, 5)
+    person_results = person_results[0]
     if not person_results or len(person_results) == 0:
         return None, 0.0
 
