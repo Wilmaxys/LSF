@@ -275,6 +275,14 @@ setup_smplerx_env() {
         (cd "$repo_dir" && git checkout 064baef0e4ab5277a3297691bc1d46ea5412586f)
     fi
 
+    # transformer_utils vendore le backbone ViT de SMPLer-X — il faut l'installer
+    # en éditable pour que @BACKBONES.register_module() s'exécute (sinon mmpose
+    # ne reconnaît pas "ViT" dans sa registry).
+    if [[ -d "$repo_dir/main/transformer_utils" ]]; then
+        log "    Install transformer_utils (ViT backbone)…"
+        pip install --no-cache-dir --no-build-isolation -e "$repo_dir/main/transformer_utils"
+    fi
+
     # Patches post-install :
     #   - mmpose 0.29.0 a un assert qui rejette mmcv-full 1.7.1 (alors qu'il fonctionne)
     #   - SMPLer-X charge SMPLX_to_J14.pkl inconditionnellement (utile pour éval EHF seulement)
