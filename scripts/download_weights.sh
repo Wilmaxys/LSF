@@ -290,13 +290,18 @@ mpi_download() {
     return 1
 }
 
-# Extrait un zip dans son dossier puis le supprime
+# Extrait un zip dans son dossier puis le supprime.
+# Utilise python3 -m zipfile (stdlib) pour éviter la dépendance unzip.
 extract_and_cleanup() {
     local zip="$1"
     local target_dir="$2"
     [[ -f "$zip" ]] || return 0
     log "  Extraction $(basename "$zip")…"
-    (cd "$target_dir" && unzip -o -q "$zip") && rm -f "$zip"
+    if ! python3 -m zipfile -e "$zip" "$target_dir"; then
+        warn "  Extraction échouée : $zip"
+        return 1
+    fi
+    rm -f "$zip"
 }
 
 step_4_mpi_models() {
@@ -313,19 +318,20 @@ step_4_mpi_models() {
 step_4_mpi_models_auto() {
     log "  Mode auto (credentials détectés)"
 
-    # SMPL-X v1.1 + extension files (login sur smpl-x.is.tue.mpg.de, ?domain=smplx)
+    # SMPL-X v1.1 (login sur smpl-x.is.tue.mpg.de, ?domain=smplx)
+    # Le zip contient les .npz + souvent les extension files (vertex_ids).
     if [[ ! -f "$MODELS_DIR/smplx/SMPLX_NEUTRAL.npz" ]]; then
         local zip="$MODELS_DIR/smplx/models_smplx_v1_1.zip"
         mpi_download "smpl-x" "smplx" "models_smplx_v1_1.zip" "$zip" && \
             extract_and_cleanup "$zip" "$MODELS_DIR/smplx"
-    fi
-    if [[ ! -f "$MODELS_DIR/smplx/MANO_SMPLX_vertex_ids.pkl" ]]; then
-        mpi_download "smpl-x" "smplx" "MANO_SMPLX_vertex_ids.pkl" \
-            "$MODELS_DIR/smplx/MANO_SMPLX_vertex_ids.pkl"
-    fi
-    if [[ ! -f "$MODELS_DIR/smplx/SMPL-X__FLAME_vertex_ids.npy" ]]; then
-        mpi_download "smpl-x" "smplx" "SMPL-X__FLAME_vertex_ids.npy" \
-            "$MODELS_DIR/smplx/SMPL-X__FLAME_vertex_ids.npy"
+        # Aplatir si le zip extrait dans un sous-dossier (ex: models/smplx/*.npz)
+        local found_npz
+        found_npz=$(find "$MODELS_DIR/smplx" -name "SMPLX_NEUTRAL.npz" -type f -print -quit 2>/dev/null)
+        if [[ -n "$found_npz" && "$(dirname "$found_npz")" != "$MODELS_DIR/smplx" ]]; then
+            log "  Aplatissement structure SMPL-X depuis $(dirname "$found_npz")"
+            find "$(dirname "$found_npz")" -type f \( -name "*.npz" -o -name "*.pkl" -o -name "*.npy" \) \
+                -exec mv -n {} "$MODELS_DIR/smplx/" \;
+        fi
     fi
 
     # SMPL v1.1.0 (zip contient basicmodel_*.pkl → rename)
