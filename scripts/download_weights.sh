@@ -362,13 +362,17 @@ step_4_mpi_models_auto() {
         fi
     fi
 
-    # FLAME
+    # FLAME — le zip extrait dans flame/FLAME2020/{generic,male,female}_model.pkl
     if [[ ! -f "$MODELS_DIR/flame/FLAME.pkl" ]]; then
         local zip="$MODELS_DIR/flame/FLAME2020.zip"
         if mpi_download "flame" "flame" "FLAME2020.zip" "$zip"; then
             extract_and_cleanup "$zip" "$MODELS_DIR/flame"
-            [[ -f "$MODELS_DIR/flame/generic_model.pkl" ]] && \
-                mv "$MODELS_DIR/flame/generic_model.pkl" "$MODELS_DIR/flame/FLAME.pkl"
+        fi
+        # Cherche generic_model.pkl où qu'il soit et renomme en FLAME.pkl
+        local flame_pkl
+        flame_pkl=$(find "$MODELS_DIR/flame" -name "generic_model.pkl" -type f -print -quit 2>/dev/null)
+        if [[ -n "$flame_pkl" ]]; then
+            mv "$flame_pkl" "$MODELS_DIR/flame/FLAME.pkl"
         fi
     fi
 

@@ -70,6 +70,12 @@ def load_model(weights_path: Path, model_name: str):
         use_cache=False,
     )
 
+    # Le config file SMPLer-X ne pose PAS human_model_path — il faut le set
+    # manuellement vers pipeline/models/ qui contient smplx/, smpl/, mano/, flame/.
+    # SMPLer-X charge ensuite smplx.create(human_model_path, 'smplx', ...) etc.
+    models_root = Path(__file__).resolve().parent.parent.parent / "models"
+    cfg.human_model_path = str(models_root)
+
     # 2. Maintenant que cfg.human_model_path est posé, on peut importer Demoer.
     from base import Demoer  # type: ignore[import-not-found]
     demoer = Demoer()
