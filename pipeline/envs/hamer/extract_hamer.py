@@ -210,13 +210,23 @@ def _load_vitpose():
     """Charge ViTPose (whole-body keypoints).
 
     Le repo HaMeR fournit `vitpose_model.py` à la racine qui wrappe la lib ViTPose.
+    Le MODEL_DICT interne référence des paths relatifs (`third-party/ViTPose/...`)
+    qui sont résolus au cwd. On chdir temporairement à la racine du repo HaMeR
+    pour le init, puis on restaure.
     """
+    import os
     repo = REPO_ROOT / "pipeline" / "envs" / "hamer" / "repo"
     sys.path.insert(0, str(repo))
     from vitpose_model import ViTPoseModel  # type: ignore[import-not-found]
     import torch
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return ViTPoseModel(device)
+
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(str(repo))
+        return ViTPoseModel(device)
+    finally:
+        os.chdir(old_cwd)
 
 
 def _load_hamer():
