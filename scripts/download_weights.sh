@@ -238,11 +238,17 @@ mpi_download() {
         return 0
     fi
 
-    # Extraire le message d'erreur MPI s'il y en a un
-    local err
+    # Échec : extraire titre + message d'erreur de la page HTML, sauver pour debug
+    local err title body
     err=$(grep -oE 'Error: [^<]*' "$dest.tmp" 2>/dev/null | head -1)
-    rm -f "$dest.tmp"
-    warn "  Échec [$status] : ${err:-licence non acceptée ou URL invalide}"
+    title=$(grep -oE '<title>[^<]*</title>' "$dest.tmp" 2>/dev/null | head -1 | sed 's/<[^>]*>//g')
+    body=$(sed -n 's/.*<body[^>]*>\(.*\)/\1/p' "$dest.tmp" 2>/dev/null | sed 's/<[^>]*>//g' | tr -s '[:space:]' ' ' | head -c 200)
+
+    local debug_path="${dest}.error.html"
+    mv "$dest.tmp" "$debug_path"
+    warn "  Échec [$status] : ${err:-${title:-réponse HTML}}"
+    [[ -n "$body" ]] && warn "    body[0:200]: $body"
+    warn "    HTML sauvegardé : $debug_path"
     return 1
 }
 
