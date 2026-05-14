@@ -66,9 +66,17 @@ def main() -> int:
     # 1. Reset scene
     bpy.ops.wm.read_factory_settings(use_empty=True)
 
-    # 2. Activer l'addon VRM (déjà activé via --addons io_scene_vrm normalement)
-    if "io_scene_vrm" not in bpy.context.preferences.addons:
-        bpy.ops.preferences.addon_enable(module="io_scene_vrm")
+    # 2. Activer l'addon VRM — auto-détection du module name (varie selon
+    # la version : `io_scene_vrm` legacy vs `VRM_Addon_for_Blender-release` récent).
+    import addon_utils
+    vrm_modules = [m.__name__ for m in addon_utils.modules() if 'vrm' in m.__name__.lower()]
+    if not vrm_modules:
+        raise RuntimeError("Aucun addon VRM trouvé. Lancer scripts/setup.sh.")
+    vrm_module = vrm_modules[0]
+    _default, loaded = addon_utils.check(vrm_module)
+    if not loaded:
+        bpy.ops.preferences.addon_enable(module=vrm_module)
+    logger.info("Addon VRM : %s", vrm_module)
 
     # 3. Importer le VRM
     bpy.ops.import_scene.vrm(filepath=str(args.avatar))

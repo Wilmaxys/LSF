@@ -302,8 +302,10 @@ def _run_retarget(animation_npz: Path, avatar: Path, output: Path, config: dict)
         )
     retarget_script = REPO_ROOT / "pipeline" / "retarget.py"
     logger.info(">>> Étape 4/4 : Retargeting Blender → %s", output.suffix)
+    # On ne passe pas `--addons io_scene_vrm` à Blender : retarget.py auto-détecte
+    # le bon nom (varie selon la version VRM addon installée) et l'active.
     _run_subprocess([
-        blender, "-b", "--addons", "io_scene_vrm",
+        blender, "-b",
         "--python", str(retarget_script),
         "--",
         "--avatar", str(avatar),
