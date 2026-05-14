@@ -9,6 +9,7 @@
 # 3) Le reste ci-dessous
 
 mmdet==2.26.0
+mmpose==0.29.0
 smplx==0.1.28
 # chumpy : installé séparément par scripts/setup.sh avec --no-build-isolation
 # (son setup.py fait `import pip` qui plante avec l'isolation PEP 517)
