@@ -189,6 +189,17 @@ step_3_hamer() {
         rm -f "$tarball"
         ok "  HaMeR demo data extrait"
     fi
+
+    # HaMeR cherche MANO_RIGHT.pkl dans son propre _DATA/data/mano/. On symlink
+    # depuis pipeline/models/mano/ (où on l'a téléchargé via MPI auth) pour
+    # éviter de dupliquer le fichier.
+    local mano_target="$dir/_DATA/data/mano/MANO_RIGHT.pkl"
+    local mano_source="$MODELS_DIR/mano/MANO_RIGHT.pkl"
+    if [[ -f "$mano_source" && ! -e "$mano_target" ]]; then
+        mkdir -p "$(dirname "$mano_target")"
+        ln -sfn "$mano_source" "$mano_target"
+        ok "  Symlink MANO_RIGHT.pkl vers _DATA/data/mano/"
+    fi
 }
 
 # ──────────────────────────────────────────────────────────────────────────────

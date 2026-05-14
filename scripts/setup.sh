@@ -427,6 +427,15 @@ setup_emoca_env() {
 
     pip install --no-build-isolation -e "$repo_dir"
 
+    # Installe le requirements upstream d'EMOCA (omegaconf, hydra-core, adabound,
+    # etc. importés au load des modules EMOCA). On ignore les conflits ; nos pins
+    # côté env_dir/requirements.txt restent prioritaires.
+    if [[ -f "$repo_dir/requirements38.txt" ]]; then
+        log "    Install requirements38 upstream EMOCA…"
+        pip install --no-cache-dir --no-build-isolation \
+            -r "$repo_dir/requirements38.txt" || warn "    Certaines deps EMOCA ont échoué (non-bloquant)"
+    fi
+
     local conda_python
     conda_python="$(conda info --base)/envs/$env_name/bin/python"
     mkdir -p "$env_dir/venv/bin"
