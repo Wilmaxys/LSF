@@ -49,7 +49,12 @@ def load_model(weights_path: Path, model_name: str):
     sys.path.insert(0, str(SMPLERX_REPO))
 
     import torch
-    from main.config import cfg  # type: ignore[import-not-found]
+    # Important : on importe `from config` (pas `from main.config`) car le code
+    # interne de SMPLer-X utilise `from config import cfg`. Python traite les
+    # deux comme des modules différents même si c'est le même fichier, donc
+    # importer via `main.config` créerait une 2e instance et nos modifs ne
+    # seraient pas vues par human_models.py.
+    from config import cfg  # type: ignore[import-not-found]
 
     # 1. Charger la config Python du variant AVANT d'importer Demoer.
     # `from base import Demoer` déclenche `utils/human_models.py` qui exécute
@@ -131,7 +136,7 @@ def infer(demoer, frame_bgr: np.ndarray, bbox: np.ndarray):
     sys.path.insert(0, str(SMPLERX_REPO / "main"))
 
     import torch
-    from main.config import cfg  # type: ignore[import-not-found]
+    from config import cfg  # type: ignore[import-not-found]
     from common.utils.preprocessing import (  # type: ignore[import-not-found]
         process_bbox, generate_patch_image,
     )
