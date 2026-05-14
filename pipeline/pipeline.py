@@ -289,7 +289,12 @@ def _run_emoca(video: Path, input_npz: Path, output_npz: Path, config: dict) -> 
 
 
 def _run_retarget(animation_npz: Path, avatar: Path, output: Path, config: dict) -> None:
-    blender = config["paths"].get("blender_bin", "blender")
+    blender_raw = config["paths"].get("blender_bin", "blender")
+    # Si c'est un chemin relatif (contient un slash), on résout par rapport au repo.
+    if "/" in str(blender_raw) or "\\" in str(blender_raw):
+        blender = str(resolve_path(blender_raw))
+    else:
+        blender = blender_raw
     if not shutil.which(blender):
         raise FileNotFoundError(
             f"Binaire Blender introuvable : {blender}. "

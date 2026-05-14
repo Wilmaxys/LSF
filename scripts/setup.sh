@@ -436,6 +436,10 @@ setup_emoca_env() {
             -r "$repo_dir/requirements38.txt" || warn "    Certaines deps EMOCA ont échoué (non-bloquant)"
     fi
 
+    # Symlink assets/ pour que les paths relatifs d'EMOCA (FLAME, DECA, etc.)
+    # résolvent vers pipeline/models/emoca/assets/ téléchargé séparément.
+    ln -sfn "$REPO_ROOT/pipeline/models/emoca/assets" "$repo_dir/assets"
+
     local conda_python
     conda_python="$(conda info --base)/envs/$env_name/bin/python"
     mkdir -p "$env_dir/venv/bin"

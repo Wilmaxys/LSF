@@ -88,8 +88,9 @@ paths:
   python_hamer: pipeline/envs/hamer/venv/bin/python
   python_emoca: pipeline/envs/emoca/venv/bin/python
 
-  # Binaire Blender (résolu via $PATH si absent)
-  blender_bin: blender
+  # Binaire Blender. setup.sh l'installe localement dans .tools/blender/.
+  # Si tu as un Blender 4.5+ système, tu peux remettre `blender`.
+  blender_bin: .tools/blender/blender
 
 
 # Logging.
