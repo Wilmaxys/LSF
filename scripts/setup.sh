@@ -353,6 +353,10 @@ setup_hamer_env() {
     fi
     pip install --no-build-isolation -e "$repo_dir"
 
+    # Symlink _DATA pour que ViTPose trouve ses checkpoints (paths relatifs
+    # type `./_DATA/vitpose_ckpts/...` résolus au cwd du repo HaMeR).
+    ln -sfn "$REPO_ROOT/pipeline/models/hamer/_DATA" "$repo_dir/_DATA"
+
     local conda_python
     conda_python="$(conda info --base)/envs/$env_name/bin/python"
     mkdir -p "$env_dir/venv/bin"

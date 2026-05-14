@@ -236,16 +236,25 @@ def _load_hamer():
     from hamer.models import load_hamer  # type: ignore[import-not-found]
     import torch
 
-    weights = REPO_ROOT / "pipeline" / "models" / "hamer" / "_DATA" / "data" / "checkpoints" / "hamer.ckpt"
-    if not weights.exists():
-        # Fallback : chemin alternatif si demo_data.tar.gz a été extrait différemment
-        weights_alt = REPO_ROOT / "pipeline" / "models" / "hamer" / "checkpoint.ckpt"
-        if weights_alt.exists():
-            weights = weights_alt
+    # Cherche hamer.ckpt dans plusieurs chemins possibles selon le layout de
+    # l'archive demo_data (release-dépendant : data/checkpoints/ vs hamer_ckpts/checkpoints/).
+    hamer_models_dir = REPO_ROOT / "pipeline" / "models" / "hamer"
+    candidates = [
+        hamer_models_dir / "_DATA" / "data" / "checkpoints" / "hamer.ckpt",
+        hamer_models_dir / "_DATA" / "hamer_ckpts" / "checkpoints" / "hamer.ckpt",
+        hamer_models_dir / "checkpoint.ckpt",
+    ]
+    weights = next((p for p in candidates if p.exists()), None)
+    if weights is None:
+        # Recherche large en dernier recours
+        found = list(hamer_models_dir.rglob("hamer.ckpt"))
+        if found:
+            weights = found[0]
         else:
             raise FileNotFoundError(
-                f"Poids HaMeR manquants. Cherché : {weights} et {weights_alt}. "
-                "Lancer scripts/download_weights.sh"
+                "Poids HaMeR manquants. Cherché :\n  - "
+                + "\n  - ".join(str(c) for c in candidates)
+                + "\nLancer scripts/download_weights.sh"
             )
 
     model, model_cfg = load_hamer(str(weights))
