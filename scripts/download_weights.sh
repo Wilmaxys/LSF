@@ -199,37 +199,78 @@ step_3_hamer() {
 #   - sinon → mode manuel (instructions affichées)
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Téléchargement MPI : pas de login séparé — le backend download.is.tue.mpg.de
-# accepte les credentials inline en POST sur la requête de download.
-# Avec creds invalides : HTTP 401 + page HTML "Error: Username/Password wrong."
-# Avec licence non acceptée : HTML "Please accept license …".
+# MPI auth : login séparé par sous-domaine (PHPSESSID est host-only), puis
+# téléchargement avec ce cookie + User-Agent navigateur + Referer (vérifications
+# anti-bot côté MPI). PHPSESSID est mis en cache par sous-domaine pour éviter
+# de se reconnecter à chaque fichier.
+MPI_UA='Mozilla/5.0 (X11; Linux x86_64; rv:149.0) Gecko/20100101 Firefox/149.0'
+declare -A MPI_PHPSESSID  # subdomain → PHPSESSID
+
+# mpi_ensure_login SUBDOMAIN
+# SUBDOMAIN = smpl-x | smpl | mano | flame
+mpi_ensure_login() {
+    local subdomain="$1"
+    [[ -n "${MPI_PHPSESSID[$subdomain]:-}" ]] && return 0
+
+    if [[ -z "${MPI_EMAIL:-}" || -z "${MPI_PASSWORD:-}" ]]; then
+        return 1
+    fi
+
+    log "  Login MPI sur ${subdomain}.is.tue.mpg.de…"
+    local cookies="/tmp/lsf_mpi_${subdomain//-/_}.cookies"
+    rm -f "$cookies"
+
+    # POST creds — le serveur set PHPSESSID dans la réponse.
+    curl -sL -c "$cookies" -b "$cookies" -A "$MPI_UA" \
+        --data-urlencode "username=$MPI_EMAIL" \
+        --data-urlencode "password=$MPI_PASSWORD" \
+        --data-urlencode "commit=Log in" \
+        "https://${subdomain}.is.tue.mpg.de/login.php" -o /dev/null
+
+    local phpsessid
+    phpsessid=$(grep PHPSESSID "$cookies" 2>/dev/null | awk '{print $NF}' | head -1)
+    rm -f "$cookies"
+
+    if [[ -z "$phpsessid" ]]; then
+        warn "  Login échoué sur ${subdomain} — credentials invalides ?"
+        return 1
+    fi
+    MPI_PHPSESSID[$subdomain]="$phpsessid"
+}
+
+# mpi_download SUBDOMAIN DOMAIN SFILE DEST
+# SUBDOMAIN : la sous-page MPI où on se logue (smpl-x, smpl, mano, flame)
+# DOMAIN    : valeur du paramètre query ?domain=… sur download.is.tue.mpg.de (smplx, smpl, mano, flame)
+# SFILE     : nom du fichier sur le backend
 mpi_download() {
-    local domain="$1"
-    local sfile="$2"
-    local dest="$3"
+    local subdomain="$1"
+    local domain="$2"
+    local sfile="$3"
+    local dest="$4"
 
     if [[ -f "$dest" ]]; then
         ok "  Déjà présent : $(basename "$dest")"
         return 0
     fi
 
-    if [[ -z "${MPI_EMAIL:-}" || -z "${MPI_PASSWORD:-}" ]]; then
-        warn "  Skip (MPI_EMAIL/MPI_PASSWORD non set) : $sfile"
+    mpi_ensure_login "$subdomain" || {
+        warn "  Skip (pas de login MPI) : $sfile"
         return 1
-    fi
+    }
 
     mkdir -p "$(dirname "$dest")"
-    local url="https://download.is.tue.mpg.de/download.php?domain=${domain}&resume=1&sfile=${sfile}"
+    local url="https://download.is.tue.mpg.de/download.php?domain=${domain}&sfile=${sfile}"
     log "  MPI: $sfile"
 
     local status
     status=$(curl -L \
-        --data-urlencode "username=$MPI_EMAIL" \
-        --data-urlencode "password=$MPI_PASSWORD" \
+        -A "$MPI_UA" \
+        -H "Referer: https://${subdomain}.is.tue.mpg.de/" \
+        --cookie "PHPSESSID=${MPI_PHPSESSID[$subdomain]}" \
         --progress-bar -o "$dest.tmp" -w "%{http_code}" \
         "$url")
 
-    # Succès = HTTP 200 ET la réponse n'est pas du HTML (les erreurs MPI le sont).
+    # Succès = HTTP 200 ET la réponse n'est pas du HTML
     local mime
     mime=$(file -b --mime-type "$dest.tmp" 2>/dev/null)
     if [[ "$status" == "200" && "$mime" != text/html* ]]; then
@@ -238,16 +279,13 @@ mpi_download() {
         return 0
     fi
 
-    # Échec : extraire titre + message d'erreur de la page HTML, sauver pour debug
-    local err title body
+    # Échec : extraire titre/error + sauver pour debug
+    local err title
     err=$(grep -oE 'Error: [^<]*' "$dest.tmp" 2>/dev/null | head -1)
     title=$(grep -oE '<title>[^<]*</title>' "$dest.tmp" 2>/dev/null | head -1 | sed 's/<[^>]*>//g')
-    body=$(sed -n 's/.*<body[^>]*>\(.*\)/\1/p' "$dest.tmp" 2>/dev/null | sed 's/<[^>]*>//g' | tr -s '[:space:]' ' ' | head -c 200)
-
     local debug_path="${dest}.error.html"
     mv "$dest.tmp" "$debug_path"
     warn "  Échec [$status] : ${err:-${title:-réponse HTML}}"
-    [[ -n "$body" ]] && warn "    body[0:200]: $body"
     warn "    HTML sauvegardé : $debug_path"
     return 1
 }
@@ -275,27 +313,26 @@ step_4_mpi_models() {
 step_4_mpi_models_auto() {
     log "  Mode auto (credentials détectés)"
 
-    # SMPL-X v1.1 + extension files
+    # SMPL-X v1.1 + extension files (login sur smpl-x.is.tue.mpg.de, ?domain=smplx)
     if [[ ! -f "$MODELS_DIR/smplx/SMPLX_NEUTRAL.npz" ]]; then
         local zip="$MODELS_DIR/smplx/models_smplx_v1_1.zip"
-        mpi_download "smplx" "models_smplx_v1_1.zip" "$zip" && \
+        mpi_download "smpl-x" "smplx" "models_smplx_v1_1.zip" "$zip" && \
             extract_and_cleanup "$zip" "$MODELS_DIR/smplx"
     fi
     if [[ ! -f "$MODELS_DIR/smplx/MANO_SMPLX_vertex_ids.pkl" ]]; then
-        mpi_download "smplx" "MANO_SMPLX_vertex_ids.pkl" \
+        mpi_download "smpl-x" "smplx" "MANO_SMPLX_vertex_ids.pkl" \
             "$MODELS_DIR/smplx/MANO_SMPLX_vertex_ids.pkl"
     fi
     if [[ ! -f "$MODELS_DIR/smplx/SMPL-X__FLAME_vertex_ids.npy" ]]; then
-        mpi_download "smplx" "SMPL-X__FLAME_vertex_ids.npy" \
+        mpi_download "smpl-x" "smplx" "SMPL-X__FLAME_vertex_ids.npy" \
             "$MODELS_DIR/smplx/SMPL-X__FLAME_vertex_ids.npy"
     fi
 
     # SMPL v1.1.0 (zip contient basicmodel_*.pkl → rename)
     if [[ ! -f "$MODELS_DIR/smpl/SMPL_NEUTRAL.pkl" ]]; then
         local zip="$MODELS_DIR/smpl/SMPL_python_v.1.1.0.zip"
-        if mpi_download "smpl" "SMPL_python_v.1.1.0.zip" "$zip"; then
+        if mpi_download "smpl" "smpl" "SMPL_python_v.1.1.0.zip" "$zip"; then
             extract_and_cleanup "$zip" "$MODELS_DIR/smpl"
-            # Renommage basicmodel_*_v1.1.0.pkl → SMPL_*.pkl
             for src in "$MODELS_DIR/smpl"/SMPL_python_v.1.1.0/smpl/models/basicmodel_*_lbs_10_207_0_v1.1.0.pkl; do
                 [[ -f "$src" ]] || continue
                 case "$(basename "$src")" in
@@ -311,9 +348,8 @@ step_4_mpi_models_auto() {
     # MANO
     if [[ ! -f "$MODELS_DIR/mano/MANO_RIGHT.pkl" ]]; then
         local zip="$MODELS_DIR/mano/mano_v1_2.zip"
-        if mpi_download "mano" "mano_v1_2.zip" "$zip"; then
+        if mpi_download "mano" "mano" "mano_v1_2.zip" "$zip"; then
             extract_and_cleanup "$zip" "$MODELS_DIR/mano"
-            # Le zip extrait dans mano_v1_2/models/MANO_RIGHT.pkl
             [[ -f "$MODELS_DIR/mano/mano_v1_2/models/MANO_RIGHT.pkl" ]] && \
                 mv "$MODELS_DIR/mano/mano_v1_2/models/MANO_RIGHT.pkl" "$MODELS_DIR/mano/"
             rm -rf "$MODELS_DIR/mano/mano_v1_2"
@@ -323,9 +359,8 @@ step_4_mpi_models_auto() {
     # FLAME
     if [[ ! -f "$MODELS_DIR/flame/FLAME.pkl" ]]; then
         local zip="$MODELS_DIR/flame/FLAME2020.zip"
-        if mpi_download "flame" "FLAME2020.zip" "$zip"; then
+        if mpi_download "flame" "flame" "FLAME2020.zip" "$zip"; then
             extract_and_cleanup "$zip" "$MODELS_DIR/flame"
-            # FLAME 2020 livre generic_model.pkl
             [[ -f "$MODELS_DIR/flame/generic_model.pkl" ]] && \
                 mv "$MODELS_DIR/flame/generic_model.pkl" "$MODELS_DIR/flame/FLAME.pkl"
         fi
