@@ -199,47 +199,10 @@ step_3_hamer() {
 #   - sinon → mode manuel (instructions affichées)
 # ──────────────────────────────────────────────────────────────────────────────
 
-MPI_COOKIES="/tmp/lsf_mpi_cookies.txt"
-MPI_LOGIN_DONE=0
-
-# URL-encode une chaîne (pour mdp avec caractères spéciaux)
-urlencode() {
-    python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$1"
-}
-
-# Login MPI une seule fois par run.
-# Le backend download.is.tue.mpg.de est commun aux 4 sites SMPL-X/SMPL/MANO/FLAME.
-mpi_login() {
-    [[ "$MPI_LOGIN_DONE" -eq 1 ]] && return 0
-
-    if [[ -z "${MPI_EMAIL:-}" || -z "${MPI_PASSWORD:-}" ]]; then
-        return 1
-    fi
-
-    log "  Authentification MPI ($MPI_EMAIL)…"
-    rm -f "$MPI_COOKIES"
-    local email_enc password_enc
-    email_enc=$(urlencode "$MPI_EMAIL")
-    password_enc=$(urlencode "$MPI_PASSWORD")
-
-    # POST sur le endpoint de login (commun à tous les domaines MPI).
-    # Pas de --fail : le endpoint redirige souvent en 302 selon les cas.
-    curl -sSL -c "$MPI_COOKIES" -b "$MPI_COOKIES" \
-        --data "username=${email_enc}&password=${password_enc}" \
-        'https://download.is.tue.mpg.de/login.php' \
-        -o /dev/null
-
-    # Vérifie qu'on a bien un cookie de session
-    if ! grep -q 'PHPSESSID\|sessionid\|_simple_auth' "$MPI_COOKIES" 2>/dev/null; then
-        warn "  Cookie de session non récupéré — credentials probablement invalides"
-        return 1
-    fi
-    ok "  Login MPI OK"
-    MPI_LOGIN_DONE=1
-}
-
-# mpi_download DOMAIN SFILE DEST
-# Télécharge depuis download.is.tue.mpg.de avec les cookies de session.
+# Téléchargement MPI : pas de login séparé — le backend download.is.tue.mpg.de
+# accepte les credentials inline en POST sur la requête de download.
+# Avec creds invalides : HTTP 401 + page HTML "Error: Username/Password wrong."
+# Avec licence non acceptée : HTML "Please accept license …".
 mpi_download() {
     local domain="$1"
     local sfile="$2"
@@ -250,27 +213,37 @@ mpi_download() {
         return 0
     fi
 
-    mpi_login || { warn "  Skip (pas de login MPI) : $sfile"; return 1; }
+    if [[ -z "${MPI_EMAIL:-}" || -z "${MPI_PASSWORD:-}" ]]; then
+        warn "  Skip (MPI_EMAIL/MPI_PASSWORD non set) : $sfile"
+        return 1
+    fi
 
     mkdir -p "$(dirname "$dest")"
-    local url="https://download.is.tue.mpg.de/download.php?domain=${domain}&sfile=${sfile}&resume=1"
+    local url="https://download.is.tue.mpg.de/download.php?domain=${domain}&resume=1&sfile=${sfile}"
     log "  MPI: $sfile"
-    if ! curl -fL -b "$MPI_COOKIES" -c "$MPI_COOKIES" \
-            --progress-bar "$url" -o "$dest.tmp"; then
-        rm -f "$dest.tmp"
-        warn "  Échec téléchargement : $url (licence non acceptée sur le site ?)"
-        return 1
+
+    local status
+    status=$(curl -L \
+        --data-urlencode "username=$MPI_EMAIL" \
+        --data-urlencode "password=$MPI_PASSWORD" \
+        --progress-bar -o "$dest.tmp" -w "%{http_code}" \
+        "$url")
+
+    # Succès = HTTP 200 ET la réponse n'est pas du HTML (les erreurs MPI le sont).
+    local mime
+    mime=$(file -b --mime-type "$dest.tmp" 2>/dev/null)
+    if [[ "$status" == "200" && "$mime" != text/html* ]]; then
+        mv "$dest.tmp" "$dest"
+        ok "  Téléchargé : $(basename "$dest") ($(du -h "$dest" | cut -f1))"
+        return 0
     fi
 
-    # Détection page de login retournée si la session a expiré (HTML, pas le binaire attendu)
-    if file "$dest.tmp" 2>/dev/null | grep -q "HTML"; then
-        rm -f "$dest.tmp"
-        warn "  La réponse est du HTML (login expired ou licence non acceptée pour ce produit)"
-        return 1
-    fi
-
-    mv "$dest.tmp" "$dest"
-    ok "  Téléchargé : $(basename "$dest") ($(du -h "$dest" | cut -f1))"
+    # Extraire le message d'erreur MPI s'il y en a un
+    local err
+    err=$(grep -oE 'Error: [^<]*' "$dest.tmp" 2>/dev/null | head -1)
+    rm -f "$dest.tmp"
+    warn "  Échec [$status] : ${err:-licence non acceptée ou URL invalide}"
+    return 1
 }
 
 # Extrait un zip dans son dossier puis le supprime
@@ -485,11 +458,6 @@ Lance maintenant :
 EOF
     fi
 }
-
-cleanup() {
-    rm -f "$MPI_COOKIES"
-}
-trap cleanup EXIT
 
 main() {
     step_1_smplerx
