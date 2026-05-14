@@ -88,6 +88,14 @@ def load_model(weights_path: Path, model_name: str):
     log_dir.mkdir(exist_ok=True)
     cfg.log_dir = str(log_dir)
 
+    # cfg.encoder_config_file est relatif à la racine du repo SMPLer-X (cwd
+    # attendu par leur workflow officiel). Notre CWD est différent, donc on
+    # convertit en absolu si ce n'est pas déjà fait.
+    if hasattr(cfg, "encoder_config_file"):
+        enc_path = Path(cfg.encoder_config_file)
+        if not enc_path.is_absolute():
+            cfg.encoder_config_file = str(SMPLERX_REPO / enc_path)
+
     # 2. Maintenant que cfg.* sont posés, on peut importer Demoer.
     from base import Demoer  # type: ignore[import-not-found]
     demoer = Demoer()
