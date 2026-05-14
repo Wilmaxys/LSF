@@ -81,7 +81,14 @@ def load_model(weights_path: Path, model_name: str):
     models_root = Path(__file__).resolve().parent.parent.parent / "models"
     cfg.human_model_path = str(models_root)
 
-    # 2. Maintenant que cfg.human_model_path est posé, on peut importer Demoer.
+    # Demoer.__init__ → colorlogger(cfg.log_dir, ...) — log_dir non posé par
+    # le config file non plus, on lui donne un tmp dir.
+    import tempfile
+    log_dir = Path(tempfile.gettempdir()) / "lsf-smplerx-logs"
+    log_dir.mkdir(exist_ok=True)
+    cfg.log_dir = str(log_dir)
+
+    # 2. Maintenant que cfg.* sont posés, on peut importer Demoer.
     from base import Demoer  # type: ignore[import-not-found]
     demoer = Demoer()
     demoer._make_model()
