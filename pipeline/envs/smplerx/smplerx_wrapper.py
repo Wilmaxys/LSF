@@ -48,6 +48,18 @@ def load_model(weights_path: Path, model_name: str):
     sys.path.insert(0, str(SMPLERX_REPO / "common"))
     sys.path.insert(0, str(SMPLERX_REPO))
 
+    # Monkey-patch mmcv Registry pour tolérer les double-registrations.
+    # transformer_utils (ViT vendoré dans SMPLer-X) ET mmdet enregistrent tous
+    # les deux SinePositionalEncoding etc. dans la même registry mmcv → conflit.
+    # Avec force=True, le 2e enregistrement écrase le 1er au lieu de raise.
+    import mmcv.utils.registry as _mmcv_registry  # type: ignore[import-not-found]
+    if not getattr(_mmcv_registry.Registry, "_lsf_patched", False):
+        _orig_register = _mmcv_registry.Registry._register_module
+        def _patched_register(self, module, module_name=None, force=False):
+            return _orig_register(self, module, module_name=module_name, force=True)
+        _mmcv_registry.Registry._register_module = _patched_register
+        _mmcv_registry.Registry._lsf_patched = True
+
     import torch
     # Important : on importe `from config` (pas `from main.config`) car le code
     # interne de SMPLer-X utilise `from config import cfg`. Python traite les
