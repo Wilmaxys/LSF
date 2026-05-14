@@ -49,6 +49,25 @@ def run_hamer(
     """Lance HaMeR et raffine les mains dans l'animation."""
     logger.info("HaMeR : %s (raffinement mains)", input_npz)
 
+    # HaMeR + ViTPose utilisent des chemins relatifs `./_DATA/...` partout
+    # (config, weights, MANO mean params, etc.). On chdir à la racine du repo
+    # HaMeR pour toute la durée du run, puis on restaure.
+    import os
+    repo = REPO_ROOT / "pipeline" / "envs" / "hamer" / "repo"
+    _orig_cwd = os.getcwd()
+    os.chdir(str(repo))
+    try:
+        _run_hamer_impl(video_path, input_npz, output_npz, config)
+    finally:
+        os.chdir(_orig_cwd)
+
+
+def _run_hamer_impl(
+    video_path: Path,
+    input_npz: Path,
+    output_npz: Path,
+    config: dict,
+) -> None:
     anim = Animation.load(input_npz)
     detector = _load_body_detector()
     vitpose = _load_vitpose()
@@ -210,23 +229,15 @@ def _load_vitpose():
     """Charge ViTPose (whole-body keypoints).
 
     Le repo HaMeR fournit `vitpose_model.py` à la racine qui wrappe la lib ViTPose.
-    Le MODEL_DICT interne référence des paths relatifs (`third-party/ViTPose/...`)
-    qui sont résolus au cwd. On chdir temporairement à la racine du repo HaMeR
-    pour le init, puis on restaure.
+    Les paths relatifs (`third-party/ViTPose/...`, `_DATA/...`) sont résolus au
+    cwd → c'est `run_hamer()` qui chdir à la racine du repo HaMeR pour tout le run.
     """
-    import os
     repo = REPO_ROOT / "pipeline" / "envs" / "hamer" / "repo"
     sys.path.insert(0, str(repo))
     from vitpose_model import ViTPoseModel  # type: ignore[import-not-found]
     import torch
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    old_cwd = os.getcwd()
-    try:
-        os.chdir(str(repo))
-        return ViTPoseModel(device)
-    finally:
-        os.chdir(old_cwd)
+    return ViTPoseModel(device)
 
 
 def _load_hamer():
