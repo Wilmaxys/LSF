@@ -286,9 +286,11 @@ setup_smplerx_env() {
     # Patches post-install :
     #   - mmpose 0.29.0 a un assert qui rejette mmcv-full 1.7.1 (alors qu'il fonctionne)
     #   - SMPLer-X charge SMPLX_to_J14.pkl inconditionnellement (utile pour éval EHF seulement)
+    #   - torchgeometry 0.1.2 fait `1 - bool_tensor` (cassé en torch >= 1.5)
     log "    Application des patches SMPLer-X…"
     python "$REPO_ROOT/scripts/patch_mmpose_mmcv.py" || warn "    Patch mmpose échoué (non-bloquant)"
     python "$REPO_ROOT/scripts/patch_smplerx_j14.py" || warn "    Patch J14 échoué (non-bloquant)"
+    python "$REPO_ROOT/scripts/patch_torchgeometry.py" || warn "    Patch torchgeometry échoué (non-bloquant)"
 
     # Lien symbolique du venv vers pipeline/envs/smplerx/venv pour l'orchestrateur
     local conda_python
