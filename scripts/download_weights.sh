@@ -334,6 +334,21 @@ step_4_mpi_models_auto() {
         fi
     fi
 
+    # Extension files (MANO/FLAME vertex indices) — pack séparé sur smpl-x.is.tue.mpg.de
+    if [[ ! -f "$MODELS_DIR/smplx/MANO_SMPLX_vertex_ids.pkl" || \
+          ! -f "$MODELS_DIR/smplx/SMPL-X__FLAME_vertex_ids.npy" ]]; then
+        local zip="$MODELS_DIR/smplx/smplx_mano_flame_correspondences.zip"
+        mpi_download "smpl-x" "smplx" "smplx_mano_flame_correspondences.zip" "$zip" && \
+            extract_and_cleanup "$zip" "$MODELS_DIR/smplx"
+        # Aplatir au cas où
+        local found_vid
+        found_vid=$(find "$MODELS_DIR/smplx" -name "MANO_SMPLX_vertex_ids.pkl" -type f -print -quit 2>/dev/null)
+        if [[ -n "$found_vid" && "$(dirname "$found_vid")" != "$MODELS_DIR/smplx" ]]; then
+            find "$(dirname "$found_vid")" -type f \( -name "*.pkl" -o -name "*.npy" \) \
+                -exec mv -n {} "$MODELS_DIR/smplx/" \;
+        fi
+    fi
+
     # SMPL v1.1.0 (zip contient basicmodel_*.pkl → rename)
     if [[ ! -f "$MODELS_DIR/smpl/SMPL_NEUTRAL.pkl" ]]; then
         local zip="$MODELS_DIR/smpl/SMPL_python_v.1.1.0.zip"
