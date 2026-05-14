@@ -208,14 +208,15 @@ def _detect_person(
     # résultat dans une liste extérieure (format multi-frame : (n_frame, n_human, 5)).
     # On l'appelle frame par frame → toujours un seul élément en outer list.
     person_results = process_mmdet_results(result, cat_id=0, multi_person=True)
-    if not person_results or len(person_results) == 0:
+    if len(person_results) == 0:
         return None, 0.0
-    # Dé-wrappe l'outer list (1, N, 5) → (N, 5)
-    person_results = person_results[0]
-    if not person_results or len(person_results) == 0:
+    # Dé-wrappe l'outer list pour passer de (1, N, 5) à (N, 5).
+    # `len()` est fiable que ce soit une liste ou un ndarray ; `not array` lève.
+    inner = person_results[0]
+    if len(inner) == 0:
         return None, 0.0
 
-    dets = np.array(person_results, dtype=np.float32)
+    dets = np.array(inner, dtype=np.float32)
     if dets.ndim == 1:
         dets = dets[None, :]
     if dets.shape[0] == 0:
