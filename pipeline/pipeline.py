@@ -73,6 +73,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Valide les chemins/envs/imports sans charger les modèles")
     parser.add_argument("--debug-overlay", action="store_true",
                         help="Génère une vidéo .mp4 avec mesh superposé en parallèle")
+    parser.add_argument("--debug-hamer-overlay", type=Path, default=None,
+                        help="Dossier où écrire les PNG overlay mesh MANO HaMeR par frame (debug tracker mains).")
     parser.add_argument("--skip-hands", action="store_true",
                         help="Ne pas lancer HaMeR (mains de SMPLer-X gardées)")
     parser.add_argument("--skip-face", action="store_true",
@@ -130,7 +132,8 @@ def main(argv: list[str] | None = None) -> int:
         hamer_npz = smplerx_npz
         if config["pipeline"]["use_hamer_for_hands"]:
             hamer_npz = tmp_dir / "hamer.npz"
-            _run_hamer(video_path, smplerx_npz, hamer_npz, config)
+            _run_hamer(video_path, smplerx_npz, hamer_npz, config,
+                       debug_overlay_dir=args.debug_hamer_overlay)
         else:
             logger.info("HaMeR désactivé — mains de SMPLer-X conservées")
 
@@ -262,17 +265,21 @@ def _run_smplerx(video: Path, output_npz: Path, config: dict) -> None:
     ])
 
 
-def _run_hamer(video: Path, input_npz: Path, output_npz: Path, config: dict) -> None:
+def _run_hamer(video: Path, input_npz: Path, output_npz: Path, config: dict,
+               debug_overlay_dir: Path | None = None) -> None:
     python_bin = resolve_path(config["paths"]["python_hamer"])
     script = REPO_ROOT / "pipeline" / "envs" / "hamer" / "extract_hamer.py"
     logger.info(">>> Étape 2/4 : HaMeR")
-    _run_subprocess([
+    cmd = [
         str(python_bin), str(script),
         "--video", str(video),
         "--input", str(input_npz),
         "--output", str(output_npz),
         "--config", json.dumps(config["pipeline"]),
-    ])
+    ]
+    if debug_overlay_dir is not None:
+        cmd += ["--debug-overlay", str(debug_overlay_dir.resolve())]
+    _run_subprocess(cmd)
 
 
 def _run_emoca(video: Path, input_npz: Path, output_npz: Path, config: dict) -> None:
