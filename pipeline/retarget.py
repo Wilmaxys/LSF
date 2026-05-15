@@ -363,6 +363,79 @@ def _convert_animation_to_amass_npz(anim: Animation, output_path: str,
     )
 
 
+def _override_finger_rotations(src_armature, tgt_armature, vrm_metadata: dict,
+                                num_frames: int) -> None:
+    """Override les rotations des bones doigts en copiant la matrix world-space
+    de l'armature SMPL-X vers le VRM, frame par frame.
+
+    Pourquoi : Rokoko foire les doigts (orphelins sans source dans son
+    bone_list → rotations effacées). Le diag a confirmé que l'armature SMPL-X
+    contient exactement les bonnes rotations (diff = 0.0000). Bypass de Rokoko
+    pour les fingers en lisant directement la matrix world-space de la source
+    et l'appliquant sur le target. Setter pose_bone.matrix triggers Blender
+    pour calculer la rotation locale correcte qui produit cette orientation
+    world — donc compense automatiquement les différences de rest pose entre
+    les deux squelettes (orientation locale des bones de doigts diffère entre
+    SMPL-X et VRoid).
+
+    Processing en ordre hiérarchique (proximal → distal) parce que la matrix
+    world d'un finger3 dépend du pose de son parent finger2.
+    """
+    import bpy
+
+    humanoid_bones = vrm_metadata["humanoid_bones"]
+    src_pose_bones = src_armature.pose.bones
+    tgt_pose_bones = tgt_armature.pose.bones
+
+    # Ordre hiérarchique : proximal (1), intermediate (2), distal (3)
+    levels: list[list[tuple[str, str]]] = [[], [], []]
+    for smplx_name, vrm_role in _SMPLX_TO_VRM_BONE_NAME.items():
+        if not any(k in smplx_name for k in ("index", "middle", "ring", "pinky", "thumb")):
+            continue
+        if smplx_name not in src_pose_bones:
+            continue
+        target_name = humanoid_bones.get(vrm_role)
+        if target_name is None or target_name not in tgt_pose_bones:
+            continue
+        # Le suffixe 1/2/3 du nom SMPL-X donne le niveau hiérarchique.
+        for level, suffix in enumerate(("1", "2", "3")):
+            if smplx_name.endswith(suffix):
+                levels[level].append((smplx_name, target_name))
+                break
+
+    total_pairs = sum(len(l) for l in levels)
+    if total_pairs == 0:
+        logger.warning("Override doigts : aucune paire trouvée")
+        return
+    logger.info("Override doigts (world-space) : %d paires, %d frames",
+                total_pairs, num_frames)
+
+    for level in levels:
+        for _, tgt_name in level:
+            tgt_pose_bones[tgt_name].rotation_mode = "QUATERNION"
+
+    # Sauvegarde le frame actuel, traite chaque frame
+    saved_frame = bpy.context.scene.frame_current
+    for f in range(num_frames):
+        bpy.context.scene.frame_set(f + 1)
+        # Force update du depsgraph pour évaluer la pose courante
+        bpy.context.view_layer.update()
+        # Traite par niveau pour que matrix.parent soit déjà à jour
+        for level in levels:
+            for src_name, tgt_name in level:
+                src_pb = src_pose_bones[src_name]
+                tgt_pb = tgt_pose_bones[tgt_name]
+                # Copy world rotation, garde translation/scale du target
+                new_mat = src_pb.matrix.copy()
+                new_mat.translation = tgt_pb.matrix.translation
+                tgt_pb.matrix = new_mat
+                tgt_pb.keyframe_insert(data_path="rotation_quaternion", frame=f + 1)
+            # Update entre niveaux pour que le child voit le parent posé
+            bpy.context.view_layer.update()
+    bpy.context.scene.frame_set(saved_frame)
+    logger.info("Override doigts terminé")
+
+
 def _diag_smplx_finger_pose(smplx_armature, anim: Animation, frame: int = 10) -> None:
     """Compare la rotation des bones doigts de l'armature SMPL-X dans Blender
     à la valeur correspondante dans `anim.left_hand_pose[frame]`.
@@ -565,6 +638,13 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
 
     bpy.ops.rsl.retarget_animation()
     logger.info("Rokoko retargeting terminé")
+
+    # Rokoko foire les doigts (génère des orphelins sans source pour certaines
+    # phalanges → rotations effacées au lieu d'être transférées). Diag confirme
+    # que l'armature SMPL-X a les bonnes rotations, donc on les copie nous-mêmes
+    # depuis SMPL-X vers VRM, frame par frame, juste pour les bones de doigts.
+    _override_finger_rotations(smplx_armature, armature, vrm_metadata,
+                                anim.num_frames)
 
     # Diagnostic : compte les keyframes par bone du VRM. Si N=1 partout → Rokoko
     # n'a baked que frame 0. Si N=num_frames → bake complet.
