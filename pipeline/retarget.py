@@ -329,6 +329,8 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
         "rightUpperLeg", "rightLowerLeg", "rightFoot",
     ]
 
+    from mathutils import Matrix
+
     for t in range(anim.num_frames):
         bpy.context.scene.frame_set(t + 1)
 
@@ -338,20 +340,22 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
             anim.global_orient[t], anim.body_pose[t],
         )
 
-        # SMPL-X (X right, Y up, Z forward = toward camera)
-        # → Blender (X right, Y forward = away from camera, Z up)
-        # Mapping : x → x, y → z, z → -y
+        # SMPL-X (X right, Y up, Z forward) → Blender (X right, Y forward, Z up).
+        # Empiriquement (testé visuellement) : (x, y, z) → (x, -z, y).
         joints_blender = np.column_stack([
             joints_smplx[:, 0],
             -joints_smplx[:, 2],
             joints_smplx[:, 1],
         ])
 
+        # On track nos propres pose matrices (en armature space) au lieu de
+        # se reposer sur pb.matrix qui n'est pas reliably mis à jour pour les
+        # enfants quand on modifie le parent dans la même frame.
+        pose_matrix_cache: dict[str, Matrix] = {}
+
         for vrm_bone in ordered_bones:
             seg = _VRM_BONE_SEGMENTS.get(vrm_bone)
-            if seg is None:
-                continue
-            if vrm_bone not in humanoid_bones:
+            if seg is None or vrm_bone not in humanoid_bones:
                 continue
             blender_name = humanoid_bones[vrm_bone]
             if blender_name not in armature.pose.bones:
@@ -359,12 +363,36 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
             pb = armature.pose.bones[blender_name]
 
             start_idx, end_idx = seg
-            target_dir = Vector(joints_blender[end_idx] - joints_blender[start_idx])
-            if target_dir.length < 1e-6:
+            target_dir_world = Vector(joints_blender[end_idx] - joints_blender[start_idx])
+            if target_dir_world.length < 1e-6:
                 continue
+            target_dir_world.normalize()
 
-            _retarget_bone_lookat(pb, target_dir)
+            # Parent pose dans armature space (notre cache, pas Blender)
+            parent_pb = pb.parent
+            if parent_pb is not None and parent_pb.name in pose_matrix_cache:
+                parent_pose = pose_matrix_cache[parent_pb.name]
+                parent_rest = parent_pb.bone.matrix_local
+                rest_local_relative = parent_rest.inverted() @ pb.bone.matrix_local
+            else:
+                parent_pose = Matrix.Identity(4)
+                rest_local_relative = pb.bone.matrix_local
+
+            # Pose sans rotation locale = parent_pose @ rest_local_relative
+            current_world = parent_pose @ rest_local_relative
+
+            # Convertir target_dir (armature space) en frame du bone (post parent + rest)
+            current_world_3x3_inv = current_world.to_3x3().inverted()
+            target_in_bone_frame = (current_world_3x3_inv @ target_dir_world).normalized()
+
+            # Rotation locale qui aligne axe Y du bone (= direction) sur target
+            local_rot_q = Vector((0.0, 1.0, 0.0)).rotation_difference(target_in_bone_frame)
+            pb.rotation_quaternion = local_rot_q
             pb.keyframe_insert("rotation_quaternion")
+
+            # Met à jour le cache pour les enfants
+            final_world = current_world @ local_rot_q.to_matrix().to_4x4()
+            pose_matrix_cache[blender_name] = final_world
 
     bpy.ops.object.mode_set(mode="OBJECT")
 
