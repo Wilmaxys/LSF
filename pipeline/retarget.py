@@ -282,84 +282,232 @@ def _inspect_vrm_via_addon(armature) -> dict:
 
 
 def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
-    """Crée les keyframes de rotation pour chaque bone VRM mappé.
+    """Crée les keyframes de rotation pour chaque bone VRM via look-at.
 
-    Pour chaque frame t et chaque (smplx_joint, vrm_bone) du mapping, on calcule
-    la rotation finale en pose.bones[bone_name].rotation_quaternion.
+    Approche :
+    1. Forward kinematic SMPL-X en pur numpy → positions monde des 22 joints
+       body à chaque frame.
+    2. Pour chaque bone VRM, look-at vers la position du joint enfant SMPL-X.
+       Indépendant des conventions axis-angle SMPL-X/Blender (qui sont la cause
+       du retargeting tordu de l'approche précédente).
 
-    L'ordre de composition (R_offset · R_anim · R_rest) est documenté en §4.4
-    de docs/PIPELINE.md — c'est l'approximation standard, à valider visuellement
-    sur un VRM connu (ex. AliciaSolid).
+    Limitations actuelles :
+    - Les rotations des doigts ne sont pas retargetées (rest pose conservée).
+      Faire ça nécessiterait la FK des 15 phalanges par main — TODO.
+    - Le twist (rotation autour de l'axe long du bone) est perdu. Acceptable
+      pour la LSF (corps + bras), à corriger pour le visage si nécessaire.
     """
     import bpy
-    from mathutils import Quaternion
+    import numpy as np
+    from mathutils import Vector
 
     bpy.context.view_layer.objects.active = armature
     bpy.ops.object.mode_set(mode="POSE")
 
-    body_map = get_body_mapping(vrm_metadata["version"])
-    lhand_map = get_hand_mapping("left", vrm_metadata["version"])
-    rhand_map = get_hand_mapping("right", vrm_metadata["version"])
-
     humanoid_bones = vrm_metadata["humanoid_bones"]
-    rest_poses = vrm_metadata["rest_poses_local"]
 
-    # Active le mode quaternion pour tous les bones concernés
+    # Charge le squelette SMPL-X (rest joints + parents)
+    rest_joints, parents = _load_smplx_rest_skeleton()
+
+    # Quaternion mode pour tous les bones humanoïdes
     for vrm_bone_name in humanoid_bones:
         blender_bone = humanoid_bones[vrm_bone_name]
         if blender_bone in armature.pose.bones:
             armature.pose.bones[blender_bone].rotation_mode = "QUATERNION"
 
-    # Set scene frame range
     bpy.context.scene.frame_start = 1
     bpy.context.scene.frame_end = anim.num_frames
     bpy.context.scene.render.fps = int(round(anim.fps))
 
-    # Itère frames
+    # Bones ordonnés topologiquement (parents avant enfants) pour que les
+    # transformations en cascade soient correctes.
+    ordered_bones: list[str] = [
+        "hips", "spine", "chest", "upperChest", "neck",
+        "leftShoulder", "leftUpperArm", "leftLowerArm",
+        "rightShoulder", "rightUpperArm", "rightLowerArm",
+        "leftUpperLeg", "leftLowerLeg", "leftFoot",
+        "rightUpperLeg", "rightLowerLeg", "rightFoot",
+    ]
+
     for t in range(anim.num_frames):
         bpy.context.scene.frame_set(t + 1)
 
-        # Root : global_orient sur hips (rotation seulement)
-        # On n'applique PAS anim.transl : pour la LSF l'avatar reste sur place,
-        # et la translation SMPL-X est en coordonnées caméra absolues (ce qui
-        # téléporte l'avatar à plusieurs mètres). On garde la rotation root pour
-        # que l'orientation globale du buste suive le signeur.
-        hips_blender = humanoid_bones.get("hips")
-        if hips_blender and hips_blender in armature.pose.bones:
-            pb = armature.pose.bones[hips_blender]
-            pb.rotation_quaternion = _aa_to_blender_quat(anim.global_orient[t])
-            pb.keyframe_insert("rotation_quaternion")
+        # FK SMPL-X pour cette frame (en frame SMPL-X : Y up, X right)
+        joints_smplx = _smplx_fk_body(
+            rest_joints, parents,
+            anim.global_orient[t], anim.body_pose[t],
+        )
 
-        # Body
-        for smplx_name, vrm_bone in body_map.items():
-            if smplx_name == "pelvis":
-                continue  # déjà fait via hips
+        # SMPL-X (X right, Y up, Z forward = toward camera)
+        # → Blender (X right, Y forward = away from camera, Z up)
+        # Mapping : x → x, y → z, z → -y
+        joints_blender = np.column_stack([
+            joints_smplx[:, 0],
+            -joints_smplx[:, 2],
+            joints_smplx[:, 1],
+        ])
+
+        for vrm_bone in ordered_bones:
+            seg = _VRM_BONE_SEGMENTS.get(vrm_bone)
+            if seg is None:
+                continue
             if vrm_bone not in humanoid_bones:
                 continue
             blender_name = humanoid_bones[vrm_bone]
             if blender_name not in armature.pose.bones:
                 continue
             pb = armature.pose.bones[blender_name]
-            i = BODY_JOINT_NAMES.index(smplx_name)
-            pb.rotation_quaternion = _aa_to_blender_quat(anim.body_pose[t, i])
+
+            start_idx, end_idx = seg
+            target_dir = Vector(joints_blender[end_idx] - joints_blender[start_idx])
+            if target_dir.length < 1e-6:
+                continue
+
+            _retarget_bone_lookat(pb, target_dir)
             pb.keyframe_insert("rotation_quaternion")
 
-        # Hands
-        for hand_pose, hand_map in [
-            (anim.left_hand_pose, lhand_map),
-            (anim.right_hand_pose, rhand_map),
-        ]:
-            for i, smplx_name, vrm_bone in hand_map:
-                if vrm_bone not in humanoid_bones:
-                    continue
-                blender_name = humanoid_bones[vrm_bone]
-                if blender_name not in armature.pose.bones:
-                    continue
-                pb = armature.pose.bones[blender_name]
-                pb.rotation_quaternion = _aa_to_blender_quat(hand_pose[t, i])
-                pb.keyframe_insert("rotation_quaternion")
-
     bpy.ops.object.mode_set(mode="OBJECT")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Helpers FK SMPL-X + look-at retargeting
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Indices canoniques des joints SMPL-X body (0..21).
+# Source : smplx.JOINT_NAMES.
+_SMPLX_JOINT_IDX = {
+    "pelvis": 0,
+    "left_hip": 1, "right_hip": 2, "spine1": 3,
+    "left_knee": 4, "right_knee": 5, "spine2": 6,
+    "left_ankle": 7, "right_ankle": 8, "spine3": 9,
+    "left_foot": 10, "right_foot": 11, "neck": 12,
+    "left_collar": 13, "right_collar": 14, "head": 15,
+    "left_shoulder": 16, "right_shoulder": 17,
+    "left_elbow": 18, "right_elbow": 19,
+    "left_wrist": 20, "right_wrist": 21,
+}
+
+# Mapping VRM bone → (start_joint_idx, end_joint_idx) en indices SMPL-X.
+# Le bone VRM est orienté du premier vers le second joint.
+_VRM_BONE_SEGMENTS: dict[str, tuple[int, int]] = {
+    "hips":          (0, 3),    # pelvis → spine1 (oriente le buste)
+    "spine":         (3, 6),    # spine1 → spine2
+    "chest":         (6, 9),    # spine2 → spine3
+    "upperChest":    (9, 12),   # spine3 → neck
+    "neck":          (12, 15),  # neck → head
+    "leftShoulder":  (9, 16),   # spine3 → left_shoulder
+    "leftUpperArm":  (16, 18),  # left_shoulder → left_elbow
+    "leftLowerArm":  (18, 20),  # left_elbow → left_wrist
+    "rightShoulder": (9, 17),
+    "rightUpperArm": (17, 19),
+    "rightLowerArm": (19, 21),
+    "leftUpperLeg":  (1, 4),    # left_hip → left_knee
+    "leftLowerLeg":  (4, 7),    # left_knee → left_ankle
+    "leftFoot":      (7, 10),   # left_ankle → left_foot
+    "rightUpperLeg": (2, 5),
+    "rightLowerLeg": (5, 8),
+    "rightFoot":     (8, 11),
+}
+
+
+def _load_smplx_rest_skeleton():
+    """Charge rest joints SMPL-X + table des parents depuis SMPLX_NEUTRAL.npz.
+
+    Returns:
+        rest_joints (22, 3) : positions des 22 body joints en pose canonique (Y-up)
+        parents (22,)       : indice du parent pour chaque joint (-1 pour racine)
+    """
+    import numpy as np
+    npz_path = REPO_ROOT / "pipeline" / "models" / "smplx" / "SMPLX_NEUTRAL.npz"
+    if not npz_path.exists():
+        raise FileNotFoundError(
+            f"SMPLX_NEUTRAL.npz introuvable : {npz_path}. Lancer scripts/download_weights.sh"
+        )
+    data = np.load(npz_path, allow_pickle=True)
+    v_template = data["v_template"]
+    J_regressor = data["J_regressor"]
+    # Le regressor peut être en sparse selon le format
+    if hasattr(J_regressor, "toarray"):
+        J_regressor = J_regressor.toarray()
+    rest_joints = J_regressor @ v_template
+    kintree = data["kintree_table"]
+    parents = kintree[0].astype(np.int64)
+    return rest_joints[:22].astype(np.float64), parents[:22]
+
+
+def _aa_to_rot_mat(aa):
+    """Rodrigues : axis-angle (3,) → matrice de rotation (3, 3)."""
+    import numpy as np
+    aa = np.asarray(aa, dtype=np.float64)
+    theta = float(np.linalg.norm(aa))
+    if theta < 1e-8:
+        return np.eye(3)
+    k = aa / theta
+    K = np.array([
+        [0.0, -k[2], k[1]],
+        [k[2], 0.0, -k[0]],
+        [-k[1], k[0], 0.0],
+    ])
+    return np.eye(3) + np.sin(theta) * K + (1.0 - np.cos(theta)) * (K @ K)
+
+
+def _smplx_fk_body(rest_joints, parents, global_orient, body_pose):
+    """Forward kinematic SMPL-X (22 body joints).
+
+    Args:
+        rest_joints (22, 3) : positions rest des 22 body joints
+        parents (22,)        : indices parents
+        global_orient (3,)   : axis-angle racine
+        body_pose (21, 3)    : axis-angles des 21 joints non-root
+
+    Returns:
+        joints_world (22, 3) : positions monde après application des rotations
+    """
+    import numpy as np
+
+    # Rotations locales de chaque joint (22)
+    rotations = np.zeros((22, 3, 3), dtype=np.float64)
+    rotations[0] = _aa_to_rot_mat(global_orient)
+    for i in range(21):
+        rotations[i + 1] = _aa_to_rot_mat(body_pose[i])
+
+    # FK : pour chaque joint, position = parent_world_pos + parent_world_rot @ rel
+    joints_world = np.zeros((22, 3), dtype=np.float64)
+    rot_world = np.zeros((22, 3, 3), dtype=np.float64)
+    joints_world[0] = rest_joints[0]
+    rot_world[0] = rotations[0]
+    for i in range(1, 22):
+        p = int(parents[i])
+        rel = rest_joints[i] - rest_joints[p]
+        joints_world[i] = joints_world[p] + rot_world[p] @ rel
+        rot_world[i] = rot_world[p] @ rotations[i]
+    return joints_world
+
+
+def _retarget_bone_lookat(pb, target_dir_armature) -> None:
+    """Oriente un pose bone pour pointer dans target_dir (en armature space).
+
+    Calcule la rotation qui aligne la direction Y locale du bone (= direction
+    head→tail) sur target_dir, puis set pb.matrix pour appliquer.
+    Blender backsolve rotation_quaternion automatiquement.
+
+    Le twist autour de la direction n'est pas contrôlé (limitation du look-at).
+    """
+    from mathutils import Vector
+
+    rest_mat = pb.bone.matrix_local  # 4x4 in armature space
+    rest_rot = rest_mat.to_3x3()
+    # Direction du bone au repos en armature space : axe Y du bone local
+    rest_dir = (rest_rot @ Vector((0.0, 1.0, 0.0))).normalized()
+
+    target = Vector(target_dir_armature).normalized()
+    align_quat = rest_dir.rotation_difference(target)
+
+    # Nouvelle pose matrix en armature space : align_quat ∘ rest_rot
+    new_rot_4x4 = align_quat.to_matrix().to_4x4() @ rest_rot.to_4x4()
+    new_mat = new_rot_4x4.copy()
+    new_mat.translation = rest_mat.translation
+    pb.matrix = new_mat
 
 
 def _bake_face(armature, anim: Animation, vrm_metadata: dict, face_mapping) -> None:
