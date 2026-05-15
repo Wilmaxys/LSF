@@ -319,17 +319,15 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
     for t in range(anim.num_frames):
         bpy.context.scene.frame_set(t + 1)
 
-        # Root : translation + global_orient sur hips
+        # Root : global_orient sur hips (rotation seulement)
+        # On n'applique PAS anim.transl : pour la LSF l'avatar reste sur place,
+        # et la translation SMPL-X est en coordonnées caméra absolues (ce qui
+        # téléporte l'avatar à plusieurs mètres). On garde la rotation root pour
+        # que l'orientation globale du buste suive le signeur.
         hips_blender = humanoid_bones.get("hips")
         if hips_blender and hips_blender in armature.pose.bones:
             pb = armature.pose.bones[hips_blender]
-            pb.location = (
-                float(anim.transl[t, 0]),
-                float(anim.transl[t, 1]),
-                float(anim.transl[t, 2]),
-            )
             pb.rotation_quaternion = _aa_to_blender_quat(anim.global_orient[t])
-            pb.keyframe_insert("location")
             pb.keyframe_insert("rotation_quaternion")
 
         # Body
