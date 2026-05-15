@@ -574,14 +574,22 @@ def _populate_rokoko_bone_mapping(source_arm, target_arm, vrm_metadata: dict) ->
             continue
 
         item = bone_list.add()
-        # Source side
-        for attr in ("bone_name_key", "bone_name_source", "name"):
-            if hasattr(item, attr):
-                setattr(item, attr, smplx_name)
-        # Target side
-        for attr in ("bone_name_target", "target"):
-            if hasattr(item, attr):
-                setattr(item, attr, target_name)
+        # `name` est ce que Rokoko utilise comme label affiché et comme clé
+        # dans le bone_list. `bone_name_key` semble être la "clé canonique"
+        # (équivalent au nom standard VRM 1.0 quand connu). `bone_name_source`
+        # est le nom du bone côté source armature. Set les trois cohérents.
+        if hasattr(item, "name"):
+            item.name = smplx_name
+        if hasattr(item, "bone_name_key"):
+            item.bone_name_key = smplx_name
+        if hasattr(item, "bone_name_source"):
+            item.bone_name_source = smplx_name
+        if hasattr(item, "bone_name_target"):
+            item.bone_name_target = target_name
+        # Force is_custom=True : nos noms SMPL-X (snake_case) ne sont pas
+        # standards Rokoko, l'auto-detect risque de les écraser sinon.
+        if hasattr(item, "is_custom"):
+            item.is_custom = True
         used_targets.add(target_name)
         n_mapped += 1
 
@@ -591,6 +599,20 @@ def _populate_rokoko_bone_mapping(source_arm, target_arm, vrm_metadata: dict) ->
     )
     if missing_roles:
         logger.warning("Rôles VRM non-mappés : %s", missing_roles[:20])
+
+    # Dump complet du bone_list juste avant retarget_animation : on saura
+    # exactement ce que Rokoko voit.
+    logger.info("Dump bone_list (%d items) avant retarget :", len(bone_list))
+    for i, item in enumerate(bone_list):
+        logger.info(
+            "  [%d] name=%r key=%r source=%r target=%r custom=%s",
+            i,
+            getattr(item, "name", ""),
+            getattr(item, "bone_name_key", ""),
+            getattr(item, "bone_name_source", ""),
+            getattr(item, "bone_name_target", ""),
+            getattr(item, "is_custom", None),
+        )
 
 
 def _bake_animation_OLD_LOOKAT(armature, anim: Animation, vrm_metadata: dict) -> None:
