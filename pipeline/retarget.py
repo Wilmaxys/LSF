@@ -302,7 +302,13 @@ def _convert_animation_to_amass_npz(anim: Animation, output_path: str,
 
     T = anim.num_frames
     poses = np.zeros((T, 165), dtype=np.float32)
-    poses[:, 0:3] = anim.global_orient
+    # global_orient = 0 : SMPLer-X sort cette rotation dans le repère caméra,
+    # pas dans le canonique SMPL-X que l'addon AMASS attend. Combiné à la
+    # conversion X+90° de l'addon, ça fait basculer le personnage au sol au
+    # fil des frames. Pour la LSF on veut un avatar debout face caméra qui
+    # signe — les rotations articulaires (body_pose, hand_pose, ...) sont
+    # locales joint→parent donc invariantes au repère, on les garde.
+    # poses[:, 0:3] reste à zéro.
     poses[:, 3:66] = anim.body_pose.reshape(T, -1)
     poses[:, 66:69] = anim.jaw_pose
     poses[:, 69:72] = anim.leye_pose
@@ -397,7 +403,25 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
     bpy.ops.rsl.retarget_animation()
     logger.info("Rokoko retargeting terminé")
 
-    # 6. Cleanup armature source + son mesh (on veut export VRM seulement)
+    # 6. Bloque la position du hips à sa rest pose.
+    # Rokoko copie la location world-space du pelvis source vers le hips du VRM.
+    # Source pelvis = (0,0,0) (on a forcé trans=0), donc le hips VRM tombe à
+    # l'origine du monde et le perso s'enterre dans le sol. On supprime les
+    # fcurves de location sur le hips pour qu'il reste à sa rest position.
+    # On garde la rotation_quaternion du hips (utile pour le body sway).
+    hips_bone_name = vrm_metadata["humanoid_bones"].get("hips")
+    if hips_bone_name and armature.animation_data and armature.animation_data.action:
+        action = armature.animation_data.action
+        loc_path = f'pose.bones["{hips_bone_name}"].location'
+        to_remove = [fc for fc in action.fcurves if fc.data_path == loc_path]
+        for fc in to_remove:
+            action.fcurves.remove(fc)
+        logger.info("Hips location bloqué : %d fcurves supprimées", len(to_remove))
+        # Reset la pose location au cas où une valeur résiduelle traîne
+        if hips_bone_name in armature.pose.bones:
+            armature.pose.bones[hips_bone_name].location = (0.0, 0.0, 0.0)
+
+    # 7. Cleanup armature source + son mesh (on veut export VRM seulement)
     for obj in list(bpy.data.objects):
         if obj == smplx_armature or (obj.parent == smplx_armature):
             bpy.data.objects.remove(obj, do_unlink=True)
