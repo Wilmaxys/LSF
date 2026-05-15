@@ -188,6 +188,19 @@ def _run_hamer_impl(
     anim.confidence_lhand = combine_confidence(anim.confidence_lhand, None)
     anim.confidence_rhand = combine_confidence(anim.confidence_rhand, None)
 
+    # Frames sans détection HaMeR : SMPLer-X y a souvent halluciné une pose
+    # chelou (mains hors cadre dans la source). On force la rest pose (doigts
+    # à plat) à la place plutôt que de garder du bruit.
+    LOW_CONF = 0.2
+    low_l = anim.confidence_lhand < LOW_CONF
+    low_r = anim.confidence_rhand < LOW_CONF
+    anim.left_hand_pose[low_l] = 0.0
+    anim.right_hand_pose[low_r] = 0.0
+    logger.info(
+        "Mains réinitialisées (conf < %.2f) : %d frames G / %d frames D sur %d",
+        LOW_CONF, int(low_l.sum()), int(low_r.sum()), len(anim.confidence_lhand),
+    )
+
     anim = anim.with_meta(
         stage="hamer",
         timestamp_hamer=datetime.now(timezone.utc).isoformat(),
