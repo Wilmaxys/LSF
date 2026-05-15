@@ -419,21 +419,22 @@ def _bake_rotations_manual(src_armature, tgt_armature, vrm_metadata: dict,
 
 
 def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
-    """Retargete l'animation SMPL-X sur le VRM.
+    """Retargete l'animation SMPL-X sur le VRM via SMPL-X Add-on + Rokoko.
 
     Étapes :
     1. Convertit anim → NPZ AMASS dans un fichier temp.
     2. SMPL-X Blender Add-on importe l'animation sur une armature source.
-    3. Bake manuel des rotations locales source → target via notre table de
-       mapping. Plus de Rokoko : son comportement (entries filtrées, fingers
-       partiellement mappés) était trop opaque pour itérer dessus.
-    4. Cleanup : retire l'armature source.
+    3. Rokoko Studio Live retargete les rotations vers l'armature VRM.
+    4. Diagnostic : compte les keyframes par bone target pour vérifier que
+       l'animation est bien baked sur toute la durée et pas juste frame 0.
+    5. Cleanup : retire l'armature source.
     """
     import bpy, addon_utils
     import tempfile
     from pathlib import Path as _Path
 
     addon_utils.enable("bl_ext.user_default.smplx_blender_addon")
+    addon_utils.enable("rokoko_studio_live_blender")
 
     # 2. Sauvegarde notre anim au format AMASS dans un temp file
     tmp_dir = _Path(tempfile.mkdtemp(prefix="lsf_amass_"))
@@ -473,14 +474,43 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
     logger.info("Armature source SMPL-X : %s", smplx_armature.name)
     logger.info("Armature target VRM    : %s", armature.name)
 
-    # 5. Bake manuel des rotations : Rokoko avait des comportements opaques
-    # (entries filtrées, retargeting partiel sur les doigts), on prend le
-    # contrôle direct. Pour chaque frame, on calcule la rotation LOCALE de
-    # chaque bone source SMPL-X et on l'écrit comme pose.rotation_quaternion
-    # sur le bone target VRM. Ça marche parce que SMPL-X et VRM ont la même
-    # rest pose canonique humanoid (T-pose) — donc une rotation locale joint
-    # → parent dans l'un est valide dans l'autre.
-    _bake_rotations_manual(smplx_armature, armature, vrm_metadata, anim.num_frames)
+    # 5. Configure Rokoko et bake le retargeting.
+    bpy.context.scene.rsl_retargeting_armature_source = smplx_armature
+    bpy.context.scene.rsl_retargeting_armature_target = armature
+    _populate_rokoko_bone_mapping(smplx_armature, armature, vrm_metadata)
+    logger.info("Rokoko bone list construite — lancement retarget…")
+
+    # Étend la scene frame range pour s'assurer que Rokoko itère bien sur
+    # toutes les frames de la source action, pas juste sur [1, 250] par défaut.
+    bpy.context.scene.frame_start = 1
+    bpy.context.scene.frame_end = anim.num_frames
+
+    bpy.ops.rsl.retarget_animation()
+    logger.info("Rokoko retargeting terminé")
+
+    # Diagnostic : compte les keyframes par bone du VRM. Si N=1 partout → Rokoko
+    # n'a baked que frame 0. Si N=num_frames → bake complet.
+    if armature.animation_data and armature.animation_data.action:
+        action = armature.animation_data.action
+        bone_kf_counts: dict[str, int] = {}
+        for fc in action.fcurves:
+            if "pose.bones[" in fc.data_path:
+                bone_name = fc.data_path.split('"')[1]
+                bone_kf_counts.setdefault(bone_name, 0)
+                bone_kf_counts[bone_name] = max(bone_kf_counts[bone_name],
+                                                 len(fc.keyframe_points))
+        if bone_kf_counts:
+            kf_values = list(bone_kf_counts.values())
+            logger.info(
+                "Keyframes par bone : min=%d max=%d moyenne=%.1f (sur %d bones, attendu %d)",
+                min(kf_values), max(kf_values), sum(kf_values) / len(kf_values),
+                len(bone_kf_counts), anim.num_frames,
+            )
+            # Liste les bones avec très peu de keyframes (suspect)
+            poor = sorted([(n, c) for n, c in bone_kf_counts.items() if c < anim.num_frames // 2])
+            if poor:
+                logger.warning("Bones sous-baked (< %d kf) : %s",
+                               anim.num_frames // 2, poor[:10])
 
     # 6. Bloque la position du hips à sa rest pose.
     # Rokoko copie la location world-space du pelvis source vers le hips du VRM.
