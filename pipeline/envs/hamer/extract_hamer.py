@@ -189,8 +189,8 @@ def _run_hamer_impl(
     anim.confidence_rhand = combine_confidence(anim.confidence_rhand, None)
 
     # Frames sans détection HaMeR : SMPLer-X y a souvent halluciné une pose
-    # chelou (mains hors cadre dans la source). On force la rest pose (doigts
-    # à plat) à la place plutôt que de garder du bruit.
+    # chelou (mains hors cadre dans la source). On force la rest pose HaMeR
+    # (axis-angle = 0 = main plate dans la convention "flat-rest" de HaMeR).
     LOW_CONF = 0.2
     low_l = anim.confidence_lhand < LOW_CONF
     low_r = anim.confidence_rhand < LOW_CONF
@@ -200,6 +200,35 @@ def _run_hamer_impl(
         "Mains réinitialisées (conf < %.2f) : %d frames G / %d frames D sur %d",
         LOW_CONF, int(low_l.sum()), int(low_r.sum()), len(anim.confidence_lhand),
     )
+
+    # ── Compensation MANO `hands_mean` ───────────────────────────────────
+    # HaMeR prédit les rotations en convention "flat rest" (axis-angle = 0
+    # → main plate). Mais la lib SMPL-X côté Blender Add-on configure MANO
+    # avec `flat_hand_mean=False` (convention courante), donc en interne :
+    #     rotation_finale = hand_pose + hands_mean
+    # Pour qu'une main plate (rotation_finale=0) sorte correctement à
+    # l'écran, on stocke ici `hand_pose = pred_HaMeR - hands_mean` ; SMPL-X
+    # rajoute hands_mean au load, net = pred_HaMeR. Sans cette correction
+    # les doigts apparaissent enroulés vers la paume (mean curl ≈ 25°/joint).
+    hands_mean_r = _load_hands_mean()  # (45,) right hand
+    if hands_mean_r is not None:
+        hm_r = hands_mean_r.reshape(NUM_HAND_JOINTS, 3).astype(np.float32)
+        # Pour la main gauche : on miroite en flippant Y et Z (cohérent avec
+        # le flip qu'on applique déjà sur les axis-angles main gauche).
+        hm_l = hm_r.copy()
+        hm_l[:, 1] *= -1
+        hm_l[:, 2] *= -1
+        anim.right_hand_pose = anim.right_hand_pose - hm_r[None, :, :]
+        anim.left_hand_pose = anim.left_hand_pose - hm_l[None, :, :]
+        logger.info(
+            "Compensation hands_mean appliquée (L2 right=%.3f, left=%.3f)",
+            float(np.linalg.norm(hm_r)), float(np.linalg.norm(hm_l)),
+        )
+    else:
+        logger.warning(
+            "MANO_RIGHT.pkl introuvable — pas de compensation hands_mean, "
+            "les doigts pourraient apparaître enroulés à tort."
+        )
 
     anim = anim.with_meta(
         stage="hamer",
@@ -303,6 +332,38 @@ def _rotmat_to_aa(R: np.ndarray) -> np.ndarray:
         R[1, 0] - R[0, 1],
     ]) / (2 * np.sin(angle))
     return (axis * angle).astype(np.float32)
+
+
+def _load_hands_mean() -> np.ndarray | None:
+    """Lit hands_mean (45,) depuis MANO_RIGHT.pkl.
+
+    Cherche dans plusieurs emplacements habituels du repo :
+        pipeline/models/mano/MANO_RIGHT.pkl
+        pipeline/models/hamer/_DATA/data/mano/MANO_RIGHT.pkl
+        pipeline/envs/hamer/repo/_DATA/data/mano/MANO_RIGHT.pkl
+    Retourne None si introuvable.
+    """
+    import pickle
+
+    candidates = [
+        REPO_ROOT / "pipeline" / "models" / "mano" / "MANO_RIGHT.pkl",
+        REPO_ROOT / "pipeline" / "models" / "hamer" / "_DATA" / "data" / "mano" / "MANO_RIGHT.pkl",
+        REPO_ROOT / "pipeline" / "envs" / "hamer" / "repo" / "_DATA" / "data" / "mano" / "MANO_RIGHT.pkl",
+    ]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            with open(path, "rb") as f:
+                mano = pickle.load(f, encoding="latin1")
+            if "hands_mean" in mano:
+                arr = np.asarray(mano["hands_mean"]).reshape(-1).astype(np.float32)
+                logger.info("hands_mean chargé depuis %s (shape=%s, L2=%.3f)",
+                            path, arr.shape, float(np.linalg.norm(arr)))
+                return arr
+        except Exception as e:
+            logger.warning("Échec lecture %s : %s", path, e)
+    return None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
