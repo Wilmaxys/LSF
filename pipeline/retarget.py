@@ -363,6 +363,77 @@ def _convert_animation_to_amass_npz(anim: Animation, output_path: str,
     )
 
 
+def _diag_smplx_finger_pose(smplx_armature, anim: Animation, frame: int = 10) -> None:
+    """Compare la rotation des bones doigts de l'armature SMPL-X dans Blender
+    à la valeur correspondante dans `anim.left_hand_pose[frame]`.
+
+    Si les quaternions matchent → le SMPL-X Add-on a bien chargé nos hand_pose,
+    le bug est ailleurs (Rokoko ou export VRM).
+    Si les quaternions divergent → l'addon mal-interprète nos données (layout
+    AMASS, PCA, axis convention…).
+    """
+    import bpy
+    from mathutils import Quaternion
+
+    finger_order = ["index1", "index2", "index3",
+                    "middle1", "middle2", "middle3",
+                    "pinky1", "pinky2", "pinky3",
+                    "ring1", "ring2", "ring3",
+                    "thumb1", "thumb2", "thumb3"]
+
+    bpy.context.scene.frame_set(frame + 1)  # frames Blender 1-indexed
+    pose_bones = smplx_armature.pose.bones
+    t = min(frame, anim.num_frames - 1)
+
+    def aa_to_quat(aa: np.ndarray) -> tuple:
+        angle = float(np.linalg.norm(aa))
+        if angle < 1e-7:
+            return (1.0, 0.0, 0.0, 0.0)
+        axis = aa / angle
+        c, s = float(np.cos(angle / 2)), float(np.sin(angle / 2))
+        return (c, float(axis[0]) * s, float(axis[1]) * s, float(axis[2]) * s)
+
+    logger.info("=== Diag SMPL-X finger pose @ frame=%d ===", frame)
+    max_diff = 0.0
+    worst_bone = None
+    for side_smplx, pose_array in (("left", anim.left_hand_pose),
+                                    ("right", anim.right_hand_pose)):
+        for joint_idx, joint_suffix in enumerate(finger_order):
+            bone_name = f"{side_smplx}_{joint_suffix}"
+            if bone_name not in pose_bones:
+                continue
+            pb = pose_bones[bone_name]
+            actual_q = (pb.rotation_quaternion.w, pb.rotation_quaternion.x,
+                        pb.rotation_quaternion.y, pb.rotation_quaternion.z)
+            expected_q = aa_to_quat(pose_array[t, joint_idx])
+            # Distance L2 entre les 2 quaternions (ou leur inverse, ambigus de signe)
+            diff = min(
+                sum((a - b) ** 2 for a, b in zip(actual_q, expected_q)) ** 0.5,
+                sum((a + b) ** 2 for a, b in zip(actual_q, expected_q)) ** 0.5,
+            )
+            if diff > max_diff:
+                max_diff = diff
+                worst_bone = bone_name
+            # Log les 3 premiers en détail
+            if joint_idx < 3 and side_smplx == "left":
+                logger.info(
+                    "  %s expected (w,x,y,z)=%s actual=%s diff=%.4f",
+                    bone_name,
+                    tuple(round(v, 3) for v in expected_q),
+                    tuple(round(v, 3) for v in actual_q),
+                    diff,
+                )
+
+    logger.info("Max diff sur 30 bones doigts : %.4f (pire : %s)",
+                max_diff, worst_bone)
+    if max_diff < 0.01:
+        logger.info("→ SMPL-X armature contient exactement nos poses. Bug downstream.")
+    elif max_diff < 0.1:
+        logger.info("→ Petites divergences, l'addon ajoute une rest pose offset peut-être.")
+    else:
+        logger.warning("→ Gros écart, l'addon n'applique PAS nos hand_pose tel quel.")
+
+
 def _bake_rotations_manual(src_armature, tgt_armature, vrm_metadata: dict,
                             num_frames: int) -> None:
     """Bake direct des rotations locales source SMPL-X → target VRM.
@@ -473,6 +544,13 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
         raise RuntimeError("Armature SMPL-X non trouvée après smplx_add_animation")
     logger.info("Armature source SMPL-X : %s", smplx_armature.name)
     logger.info("Armature target VRM    : %s", armature.name)
+
+    # Diagnostic : compare la rotation des bones de doigts dans l'armature
+    # SMPL-X (post smplx_add_animation) à ce que notre NPZ leur prescrit. Si
+    # écart → l'addon mal-interprète nos hand_pose (PCA, layout AMASS différent,
+    # etc.). Si égalité → la pose est correcte côté SMPL-X et le bug est
+    # downstream (Rokoko ou export VRM).
+    _diag_smplx_finger_pose(smplx_armature, anim, frame=10)
 
     # 5. Configure Rokoko et bake le retargeting.
     bpy.context.scene.rsl_retargeting_armature_source = smplx_armature
