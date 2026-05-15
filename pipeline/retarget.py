@@ -379,6 +379,10 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
     bpy.context.scene.rsl_retargeting_armature_source = smplx_armature
     bpy.context.scene.rsl_retargeting_armature_target = armature
     bpy.ops.rsl.build_bone_list()
+
+    # Auto-détection de Rokoko ne reconnait pas les noms SMPL-X (`pelvis`,
+    # `left_hip`, etc.). On force le mapping nous-mêmes.
+    _populate_rokoko_bone_mapping(smplx_armature, armature, vrm_metadata)
     logger.info("Rokoko bone list construite — lancement retarget…")
     bpy.ops.rsl.retarget_animation()
     logger.info("Rokoko retargeting terminé")
@@ -387,6 +391,129 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
     for obj in list(bpy.data.objects):
         if obj == smplx_armature or (obj.parent == smplx_armature):
             bpy.data.objects.remove(obj, do_unlink=True)
+
+
+# Mapping SMPL-X canonical joint name → VRM standard humanoid bone name.
+# Le SMPL-X Blender Add-on nomme les bones avec les conventions SMPL-X
+# (snake_case). Le VRM utilise camelCase. On bridge les deux ici pour Rokoko.
+_SMPLX_TO_VRM_BONE_NAME: dict[str, str] = {
+    "pelvis": "hips",
+    "left_hip": "leftUpperLeg",
+    "right_hip": "rightUpperLeg",
+    "spine1": "spine",
+    "left_knee": "leftLowerLeg",
+    "right_knee": "rightLowerLeg",
+    "spine2": "chest",
+    "left_ankle": "leftFoot",
+    "right_ankle": "rightFoot",
+    "spine3": "upperChest",
+    "left_foot": "leftToes",
+    "right_foot": "rightToes",
+    "neck": "neck",
+    "left_collar": "leftShoulder",
+    "right_collar": "rightShoulder",
+    "head": "head",
+    "left_shoulder": "leftUpperArm",
+    "right_shoulder": "rightUpperArm",
+    "left_elbow": "leftLowerArm",
+    "right_elbow": "rightLowerArm",
+    "left_wrist": "leftHand",
+    "right_wrist": "rightHand",
+    "jaw": "jaw",
+    "left_eye_smplhf": "leftEye",
+    "right_eye_smplhf": "rightEye",
+    # Doigts gauche
+    "left_index1": "leftIndexProximal",
+    "left_index2": "leftIndexIntermediate",
+    "left_index3": "leftIndexDistal",
+    "left_middle1": "leftMiddleProximal",
+    "left_middle2": "leftMiddleIntermediate",
+    "left_middle3": "leftMiddleDistal",
+    "left_ring1": "leftRingProximal",
+    "left_ring2": "leftRingIntermediate",
+    "left_ring3": "leftRingDistal",
+    "left_pinky1": "leftLittleProximal",
+    "left_pinky2": "leftLittleIntermediate",
+    "left_pinky3": "leftLittleDistal",
+    "left_thumb1": "leftThumbProximal",
+    "left_thumb2": "leftThumbIntermediate",
+    "left_thumb3": "leftThumbDistal",
+    # Doigts droite (mêmes suffixes)
+    "right_index1": "rightIndexProximal",
+    "right_index2": "rightIndexIntermediate",
+    "right_index3": "rightIndexDistal",
+    "right_middle1": "rightMiddleProximal",
+    "right_middle2": "rightMiddleIntermediate",
+    "right_middle3": "rightMiddleDistal",
+    "right_ring1": "rightRingProximal",
+    "right_ring2": "rightRingIntermediate",
+    "right_ring3": "rightRingDistal",
+    "right_pinky1": "rightLittleProximal",
+    "right_pinky2": "rightLittleIntermediate",
+    "right_pinky3": "rightLittleDistal",
+    "right_thumb1": "rightThumbProximal",
+    "right_thumb2": "rightThumbIntermediate",
+    "right_thumb3": "rightThumbDistal",
+}
+
+
+def _populate_rokoko_bone_mapping(source_arm, target_arm, vrm_metadata: dict) -> None:
+    """Remplit `bpy.context.scene.rsl_retargeting_bone_list` avec un mapping
+    explicite SMPL-X (source) → VRM bone Blender name (target).
+
+    Rokoko's auto-detect ne reconnait pas les noms SMPL-X. On utilise notre
+    table _SMPLX_TO_VRM_BONE_NAME couplée à humanoid_bones[vrm_metadata] qui
+    donne le nom Blender exact du bone VRM pour chaque rôle humanoïde standard.
+    """
+    import bpy
+
+    humanoid_bones = vrm_metadata["humanoid_bones"]  # vrm_role → blender_bone_name
+    bone_list = bpy.context.scene.rsl_retargeting_bone_list
+
+    source_bone_names = {b.name for b in source_arm.data.bones}
+    target_bone_names = {b.name for b in target_arm.data.bones}
+
+    # Introspection pour log de debug
+    logger.info("Source SMPL-X bones (%d) : ex. %s",
+                len(source_bone_names),
+                sorted(source_bone_names)[:5])
+
+    # On itère sur les items existants de bone_list et on fixe le mapping
+    # source/target. La liste a été pré-remplie par build_bone_list() avec
+    # tous les bones source ; on ne fait que définir target.
+    n_mapped = 0
+    n_skipped = 0
+    for item in bone_list:
+        # Le bone source dans Rokoko's structure :
+        # Selon la version : item.bone_name_key ou item.name ou item.bone_name_source
+        source_name = ""
+        for attr in ("bone_name_key", "bone_name_source", "name"):
+            v = getattr(item, attr, "")
+            if v:
+                source_name = v
+                break
+        if not source_name:
+            continue
+
+        # Trouve le rôle VRM correspondant
+        vrm_role = _SMPLX_TO_VRM_BONE_NAME.get(source_name)
+        if vrm_role is None:
+            n_skipped += 1
+            continue
+        # Trouve le nom Blender du bone VRM pour ce rôle
+        target_name = humanoid_bones.get(vrm_role)
+        if target_name is None or target_name not in target_bone_names:
+            n_skipped += 1
+            continue
+
+        # Set target (essaye plusieurs noms d'attribut possibles)
+        for attr in ("bone_name_target", "target"):
+            if hasattr(item, attr):
+                setattr(item, attr, target_name)
+                break
+        n_mapped += 1
+
+    logger.info("Rokoko mapping : %d bones mappés, %d non-mappés", n_mapped, n_skipped)
 
 
 def _bake_animation_OLD_LOOKAT(armature, anim: Animation, vrm_metadata: dict) -> None:
