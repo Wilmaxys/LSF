@@ -345,7 +345,7 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
         bpy.context.scene.frame_set(t + 1)
 
         # FK SMPL-X complet (55 joints : body + face + 2 mains)
-        joints_smplx = _smplx_fk_full(rest_joints, parents, anim, t)
+        joints_smplx, rot_world_smplx = _smplx_fk_full(rest_joints, parents, anim, t)
 
         # Conversion frame SMPL-X → Blender. Empirique (cumulant Y-down de SMPL-X
         # et forward direction VRM) : (x, y, z) → (x, z, -y).
@@ -392,8 +392,28 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
             current_world_3x3_inv = current_world.to_3x3().inverted()
             target_in_bone_frame = (current_world_3x3_inv @ target_dir_world).normalized()
 
-            # Rotation locale qui aligne axe Y du bone (= direction) sur target
-            local_rot_q = Vector((0.0, 1.0, 0.0)).rotation_difference(target_in_bone_frame)
+            # Rotation locale qui aligne axe Y du bone (= direction) sur target (= "swing")
+            swing_q = Vector((0.0, 1.0, 0.0)).rotation_difference(target_in_bone_frame)
+
+            # Twist : rotation autour de l'axe long du bone, extrait de la matrice
+            # de rotation monde SMPL-X du joint correspondant. Sans ça, les paumes
+            # des mains et les twists des bras sont libres → orientations aléatoires.
+            twist_q = Vector()  # identité par défaut
+            joint_idx_for_twist = _VRM_BONE_TO_SMPLX_JOINT_HEAD.get(vrm_bone)
+            if joint_idx_for_twist is not None and joint_idx_for_twist < len(rot_world_smplx):
+                from mathutils import Quaternion as _Q
+                # On extrait le twist en frame local du bone REST (avant swing)
+                bone_rest_world_3x3 = pb.bone.matrix_local.to_3x3()
+                twist_q = _extract_twist_around_y(
+                    rot_world_smplx[joint_idx_for_twist],
+                    bone_rest_world_3x3,
+                )
+                if not isinstance(twist_q, _Q):
+                    twist_q = _Q()
+
+            # Composition : on applique twist d'abord (en rest frame), puis swing
+            # qui réoriente le bone vers target_dir. L'axe de twist suit la rotation.
+            local_rot_q = swing_q @ twist_q
             pb.rotation_quaternion = local_rot_q
             pb.keyframe_insert("rotation_quaternion")
 
@@ -552,6 +572,7 @@ def _smplx_fk_full(rest_joints, parents, anim, t: int):
 
     Returns:
         joints_world (55, 3) : positions monde après application des rotations
+        rot_world (55, 3, 3) : rotation monde de chaque joint (pour extraction du twist)
     """
     import numpy as np
 
@@ -580,14 +601,94 @@ def _smplx_fk_full(rest_joints, parents, anim, t: int):
     for i in range(1, n):
         p = int(parents[i])
         if p < 0 or p >= n:
-            # Root sans parent valide (peut arriver pour les hand joints sur certains exports)
             joints_world[i] = rest_joints[i]
             rot_world[i] = rotations[i]
             continue
         rel = rest_joints[i] - rest_joints[p]
         joints_world[i] = joints_world[p] + rot_world[p] @ rel
         rot_world[i] = rot_world[p] @ rotations[i]
-    return joints_world
+    return joints_world, rot_world
+
+
+# Mapping VRM bone → indice SMPL-X joint (joint à la tête du bone, dont la rotation
+# définit l'orientation/twist du bone enfant qui en sort).
+_VRM_BONE_TO_SMPLX_JOINT_HEAD: dict[str, int] = {
+    "hips": 0,            # pelvis
+    "spine": 3,           # spine1
+    "chest": 6,           # spine2
+    "upperChest": 9,      # spine3
+    "neck": 12,
+    "leftShoulder": 13,   # left_collar
+    "leftUpperArm": 16,   # left_shoulder
+    "leftLowerArm": 18,   # left_elbow
+    "leftHand": 20,       # left_wrist
+    "rightShoulder": 14,
+    "rightUpperArm": 17,
+    "rightLowerArm": 19,
+    "rightHand": 21,
+    "leftUpperLeg": 1,
+    "leftLowerLeg": 4,
+    "leftFoot": 7,
+    "rightUpperLeg": 2,
+    "rightLowerLeg": 5,
+    "rightFoot": 8,
+    # Doigts : joint à la tête de la phalange
+    "leftThumbProximal": 37, "leftThumbIntermediate": 38, "leftThumbDistal": 39,
+    "leftIndexProximal": 25, "leftIndexIntermediate": 26, "leftIndexDistal": 27,
+    "leftMiddleProximal": 28, "leftMiddleIntermediate": 29, "leftMiddleDistal": 30,
+    "leftRingProximal": 34, "leftRingIntermediate": 35, "leftRingDistal": 36,
+    "leftLittleProximal": 31, "leftLittleIntermediate": 32, "leftLittleDistal": 33,
+    "rightThumbProximal": 52, "rightThumbIntermediate": 53, "rightThumbDistal": 54,
+    "rightIndexProximal": 40, "rightIndexIntermediate": 41, "rightIndexDistal": 42,
+    "rightMiddleProximal": 43, "rightMiddleIntermediate": 44, "rightMiddleDistal": 45,
+    "rightRingProximal": 49, "rightRingIntermediate": 50, "rightRingDistal": 51,
+    "rightLittleProximal": 46, "rightLittleIntermediate": 47, "rightLittleDistal": 48,
+}
+
+
+# Matrice de changement de base SMPL-X → Blender (cohérent avec joints_blender).
+# SMPL-X (x, y, z) → Blender (x, z, -y).
+import numpy as _np
+_SMPLX_TO_BLENDER_BASIS = _np.array([
+    [1.0, 0.0, 0.0],   # X stays
+    [0.0, 0.0, 1.0],   # SMPL-X Y → Blender Z
+    [0.0, -1.0, 0.0],  # SMPL-X Z → Blender -Y
+], dtype=_np.float64)
+
+
+def _extract_twist_around_y(R_world_smplx, bone_rest_world_3x3):
+    """Extrait l'angle de twist (rotation autour de l'axe Y du bone) depuis la
+    rotation monde SMPL-X.
+
+    Args:
+        R_world_smplx (3, 3) : rotation monde du joint en frame SMPL-X
+        bone_rest_world_3x3 (mathutils.Matrix 3x3) : matrice de rest du bone en frame Blender (armature space)
+
+    Returns:
+        twist_quat (mathutils.Quaternion) : rotation pure autour de Y dans le frame local du bone
+    """
+    import numpy as np
+    from mathutils import Matrix, Quaternion
+
+    # Conversion SMPL-X → Blender
+    B = _SMPLX_TO_BLENDER_BASIS
+    R_blender = B @ R_world_smplx @ B.T
+
+    # Conversion en bone local frame : R_local = rest^-1 @ R_world @ rest
+    rest_np = np.array([[bone_rest_world_3x3[i][j] for j in range(3)] for i in range(3)],
+                        dtype=np.float64)
+    R_local_np = rest_np.T @ R_blender @ rest_np
+
+    # Convertir en quaternion via mathutils
+    R_local_mat = Matrix([list(row) for row in R_local_np])
+    q_local = R_local_mat.to_quaternion()
+
+    # Twist = composante de q autour de Y local (= (0, 1, 0))
+    twist = Quaternion((q_local.w, 0.0, q_local.y, 0.0))
+    if twist.magnitude < 1e-8:
+        return Quaternion()  # identité
+    twist.normalize()
+    return twist
 
 
 def _retarget_bone_lookat(pb, target_dir_armature) -> None:
