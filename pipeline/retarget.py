@@ -458,12 +458,12 @@ _SMPLX_TO_VRM_BONE_NAME: dict[str, str] = {
 
 
 def _populate_rokoko_bone_mapping(source_arm, target_arm, vrm_metadata: dict) -> None:
-    """Remplit `bpy.context.scene.rsl_retargeting_bone_list` avec un mapping
-    explicite SMPL-X (source) → VRM bone Blender name (target).
+    """Construit `bpy.context.scene.rsl_retargeting_bone_list` from scratch
+    avec un mapping explicite SMPL-X (source) → VRM bone Blender name (target).
 
-    Rokoko's auto-detect ne reconnait pas les noms SMPL-X. On utilise notre
-    table _SMPLX_TO_VRM_BONE_NAME couplée à humanoid_bones[vrm_metadata] qui
-    donne le nom Blender exact du bone VRM pour chaque rôle humanoïde standard.
+    On clear la liste auto-générée par `build_bone_list()` (qui peut avoir
+    matché certains bones aléatoirement et créer des conflits target) puis on
+    rebuild avec notre table _SMPLX_TO_VRM_BONE_NAME + humanoid_bones.
     """
     import bpy
 
@@ -473,47 +473,45 @@ def _populate_rokoko_bone_mapping(source_arm, target_arm, vrm_metadata: dict) ->
     source_bone_names = {b.name for b in source_arm.data.bones}
     target_bone_names = {b.name for b in target_arm.data.bones}
 
-    # Introspection pour log de debug
     logger.info("Source SMPL-X bones (%d) : ex. %s",
                 len(source_bone_names),
                 sorted(source_bone_names)[:5])
 
-    # On itère sur les items existants de bone_list et on fixe le mapping
-    # source/target. La liste a été pré-remplie par build_bone_list() avec
-    # tous les bones source ; on ne fait que définir target.
-    n_mapped = 0
-    n_skipped = 0
-    for item in bone_list:
-        # Le bone source dans Rokoko's structure :
-        # Selon la version : item.bone_name_key ou item.name ou item.bone_name_source
-        source_name = ""
-        for attr in ("bone_name_key", "bone_name_source", "name"):
-            v = getattr(item, attr, "")
-            if v:
-                source_name = v
-                break
-        if not source_name:
-            continue
+    # Clear toute la liste (auto-matched de build_bone_list peut créer des
+    # duplicates target avec nos mappings explicites)
+    bone_list.clear()
 
-        # Trouve le rôle VRM correspondant
-        vrm_role = _SMPLX_TO_VRM_BONE_NAME.get(source_name)
-        if vrm_role is None:
-            n_skipped += 1
+    # Vérifie quels attributs sont disponibles sur le PropertyGroup item
+    # (selon la version Rokoko : bone_name_key/bone_name_source/name + bone_name_target/target)
+    n_mapped = 0
+    n_target_missing = 0
+    used_targets: set[str] = set()
+
+    for smplx_name, vrm_role in _SMPLX_TO_VRM_BONE_NAME.items():
+        if smplx_name not in source_bone_names:
             continue
-        # Trouve le nom Blender du bone VRM pour ce rôle
         target_name = humanoid_bones.get(vrm_role)
         if target_name is None or target_name not in target_bone_names:
-            n_skipped += 1
+            n_target_missing += 1
+            continue
+        if target_name in used_targets:
+            # Ne devrait pas arriver avec notre table 1:1, mais filet de sécurité
             continue
 
-        # Set target (essaye plusieurs noms d'attribut possibles)
+        item = bone_list.add()
+        # Source side
+        for attr in ("bone_name_key", "bone_name_source", "name"):
+            if hasattr(item, attr):
+                setattr(item, attr, smplx_name)
+        # Target side
         for attr in ("bone_name_target", "target"):
             if hasattr(item, attr):
                 setattr(item, attr, target_name)
-                break
+        used_targets.add(target_name)
         n_mapped += 1
 
-    logger.info("Rokoko mapping : %d bones mappés, %d non-mappés", n_mapped, n_skipped)
+    logger.info("Rokoko mapping : %d bones mappés (target manquant: %d)",
+                n_mapped, n_target_missing)
 
 
 def _bake_animation_OLD_LOOKAT(armature, anim: Animation, vrm_metadata: dict) -> None:
