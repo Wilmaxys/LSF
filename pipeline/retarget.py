@@ -281,21 +281,120 @@ def _inspect_vrm_via_addon(armature) -> dict:
     }
 
 
+def _convert_animation_to_amass_npz(anim: Animation, output_path: str,
+                                     gender: str = "neutral") -> None:
+    """Convertit notre animation.npz au format AMASS attendu par le SMPL-X Blender Add-on.
+
+    Format AMASS requis par bpy.ops.object.smplx_add_animation :
+        trans (T, 3), gender (str), mocap_frame_rate (int),
+        betas (10,), poses (T, 165) flat axis-angle SMPL-X 55 joints.
+
+    Layout `poses` (offsets en composantes axis-angle) :
+        [0:3]    global_orient
+        [3:66]   body_pose         (21 joints × 3)
+        [66:69]  jaw
+        [69:72]  left_eye
+        [72:75]  right_eye
+        [75:120] left_hand_pose   (15 joints × 3)
+        [120:165] right_hand_pose (15 joints × 3)
+    """
+    import numpy as np
+
+    T = anim.num_frames
+    poses = np.zeros((T, 165), dtype=np.float32)
+    poses[:, 0:3] = anim.global_orient
+    poses[:, 3:66] = anim.body_pose.reshape(T, -1)
+    poses[:, 66:69] = anim.jaw_pose
+    poses[:, 69:72] = anim.leye_pose
+    poses[:, 72:75] = anim.reye_pose
+    poses[:, 75:120] = anim.left_hand_pose.reshape(T, -1)
+    poses[:, 120:165] = anim.right_hand_pose.reshape(T, -1)
+
+    np.savez(
+        output_path,
+        trans=anim.transl.astype(np.float32),
+        gender=np.array(gender),
+        mocap_frame_rate=np.int32(round(anim.fps)),
+        betas=anim.betas.astype(np.float32)[:10],
+        poses=poses,
+    )
+
+
 def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
-    """Crée les keyframes de rotation pour chaque bone VRM via look-at.
+    """Retargete l'animation SMPL-X sur le VRM via SMPL-X Blender Add-on + Rokoko.
 
-    Approche :
-    1. Forward kinematic SMPL-X en pur numpy → positions monde des 22 joints
-       body à chaque frame.
-    2. Pour chaque bone VRM, look-at vers la position du joint enfant SMPL-X.
-       Indépendant des conventions axis-angle SMPL-X/Blender (qui sont la cause
-       du retargeting tordu de l'approche précédente).
+    Étapes :
+    1. Convertit anim → NPZ AMASS dans un fichier temp.
+    2. Active les addons SMPL-X et Rokoko.
+    3. bpy.ops.object.smplx_add_animation(filepath=...) crée une armature SMPL-X
+       source avec les rest poses + rotations correctes par construction.
+    4. Configure Rokoko : source = SMPL-X armature, target = VRM armature.
+    5. bpy.ops.rsl.build_bone_list() + bpy.ops.rsl.retarget_animation() bake
+       le retargeting sur le VRM.
+    6. Cleanup : retire l'armature source.
 
-    Limitations actuelles :
-    - Les rotations des doigts ne sont pas retargetées (rest pose conservée).
-      Faire ça nécessiterait la FK des 15 phalanges par main — TODO.
-    - Le twist (rotation autour de l'axe long du bone) est perdu. Acceptable
-      pour la LSF (corps + bras), à corriger pour le visage si nécessaire.
+    Cette approche remplace l'ancien custom look-at math car les conventions
+    d'axes/rest poses sont gérées par les addons éprouvés.
+    """
+    import bpy, addon_utils
+    import tempfile
+    from pathlib import Path as _Path
+
+    # 1. Active les addons requis
+    addon_utils.enable("bl_ext.user_default.smplx_blender_addon")
+    addon_utils.enable("rokoko_studio_live_blender")
+
+    # 2. Sauvegarde notre anim au format AMASS dans un temp file
+    tmp_dir = _Path(tempfile.mkdtemp(prefix="lsf_amass_"))
+    amass_path = tmp_dir / "animation_amass.npz"
+    _convert_animation_to_amass_npz(anim, str(amass_path))
+    logger.info("Animation convertie au format AMASS : %s", amass_path)
+
+    # 3. Importe via l'opérateur SMPL-X Add-on (crée armature + mesh + anim baked)
+    target_framerate = int(round(anim.fps))
+    # Note : le mode_set ferme bien le contexte si on est en autre chose
+    if bpy.context.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    bpy.ops.object.smplx_add_animation(
+        filepath=str(amass_path),
+        anim_format="SMPL-X",
+        target_framerate=target_framerate,
+    )
+
+    # 4. Trouve l'armature SMPL-X qui vient d'être créée
+    # L'addon crée un mesh + son parent armature. On cherche la dernière armature ajoutée.
+    smplx_armature = None
+    for obj in bpy.data.objects:
+        if obj.type == "ARMATURE" and obj.name != armature.name:
+            # Heuristique : l'armature SMPL-X a un nom comme "SMPLX_neutral_..."
+            if "smplx" in obj.name.lower() or "smpl" in obj.name.lower():
+                smplx_armature = obj
+                break
+    if smplx_armature is None:
+        raise RuntimeError("Armature SMPL-X non trouvée après smplx_add_animation")
+    logger.info("Armature source SMPL-X : %s", smplx_armature.name)
+    logger.info("Armature target VRM    : %s", armature.name)
+
+    # 5. Configure Rokoko et bake le retargeting
+    bpy.context.scene.rsl_retargeting_armature_source = smplx_armature
+    bpy.context.scene.rsl_retargeting_armature_target = armature
+    bpy.ops.rsl.build_bone_list()
+    logger.info("Rokoko bone list construite — lancement retarget…")
+    bpy.ops.rsl.retarget_animation()
+    logger.info("Rokoko retargeting terminé")
+
+    # 6. Cleanup armature source + son mesh (on veut export VRM seulement)
+    for obj in list(bpy.data.objects):
+        if obj == smplx_armature or (obj.parent == smplx_armature):
+            bpy.data.objects.remove(obj, do_unlink=True)
+
+
+def _bake_animation_OLD_LOOKAT(armature, anim: Animation, vrm_metadata: dict) -> None:
+    """Ancien retargeting via FK + look-at. Conservé pour référence/fallback.
+
+    Limitations connues :
+    - Twist autour du bone perdu (paumes/doigts dans orientation aléatoire)
+    - Pas de gestion fine des rest pose différences SMPL-X / VRM
     """
     import bpy
     import numpy as np
@@ -392,28 +491,9 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
             current_world_3x3_inv = current_world.to_3x3().inverted()
             target_in_bone_frame = (current_world_3x3_inv @ target_dir_world).normalized()
 
-            # Rotation locale qui aligne axe Y du bone (= direction) sur target (= "swing")
-            swing_q = Vector((0.0, 1.0, 0.0)).rotation_difference(target_in_bone_frame)
-
-            # Twist : rotation autour de l'axe long du bone, extrait de la matrice
-            # de rotation monde SMPL-X du joint correspondant. Sans ça, les paumes
-            # des mains et les twists des bras sont libres → orientations aléatoires.
-            twist_q = Vector()  # identité par défaut
-            joint_idx_for_twist = _VRM_BONE_TO_SMPLX_JOINT_HEAD.get(vrm_bone)
-            if joint_idx_for_twist is not None and joint_idx_for_twist < len(rot_world_smplx):
-                from mathutils import Quaternion as _Q
-                # On extrait le twist en frame local du bone REST (avant swing)
-                bone_rest_world_3x3 = pb.bone.matrix_local.to_3x3()
-                twist_q = _extract_twist_around_y(
-                    rot_world_smplx[joint_idx_for_twist],
-                    bone_rest_world_3x3,
-                )
-                if not isinstance(twist_q, _Q):
-                    twist_q = _Q()
-
-            # Composition : on applique twist d'abord (en rest frame), puis swing
-            # qui réoriente le bone vers target_dir. L'axe de twist suit la rotation.
-            local_rot_q = swing_q @ twist_q
+            # Look-at simple : aligne axe Y du bone sur target_dir.
+            # Le twist (palms, orientation des phalanges) reste libre — limitation du look-at.
+            local_rot_q = Vector((0.0, 1.0, 0.0)).rotation_difference(target_in_bone_frame)
             pb.rotation_quaternion = local_rot_q
             pb.keyframe_insert("rotation_quaternion")
 
