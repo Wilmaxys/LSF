@@ -319,14 +319,24 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
     bpy.context.scene.frame_end = anim.num_frames
     bpy.context.scene.render.fps = int(round(anim.fps))
 
-    # Bones ordonnés topologiquement (parents avant enfants) pour que les
-    # transformations en cascade soient correctes.
+    # Bones ordonnés topologiquement (parents avant enfants).
     ordered_bones: list[str] = [
         "hips", "spine", "chest", "upperChest", "neck",
-        "leftShoulder", "leftUpperArm", "leftLowerArm",
-        "rightShoulder", "rightUpperArm", "rightLowerArm",
+        "leftShoulder", "leftUpperArm", "leftLowerArm", "leftHand",
+        "rightShoulder", "rightUpperArm", "rightLowerArm", "rightHand",
         "leftUpperLeg", "leftLowerLeg", "leftFoot",
         "rightUpperLeg", "rightLowerLeg", "rightFoot",
+        # Mains : 5 doigts × 3 phalanges × 2 mains
+        "leftThumbProximal", "leftThumbIntermediate", "leftThumbDistal",
+        "leftIndexProximal", "leftIndexIntermediate", "leftIndexDistal",
+        "leftMiddleProximal", "leftMiddleIntermediate", "leftMiddleDistal",
+        "leftRingProximal", "leftRingIntermediate", "leftRingDistal",
+        "leftLittleProximal", "leftLittleIntermediate", "leftLittleDistal",
+        "rightThumbProximal", "rightThumbIntermediate", "rightThumbDistal",
+        "rightIndexProximal", "rightIndexIntermediate", "rightIndexDistal",
+        "rightMiddleProximal", "rightMiddleIntermediate", "rightMiddleDistal",
+        "rightRingProximal", "rightRingIntermediate", "rightRingDistal",
+        "rightLittleProximal", "rightLittleIntermediate", "rightLittleDistal",
     ]
 
     from mathutils import Matrix
@@ -334,11 +344,8 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
     for t in range(anim.num_frames):
         bpy.context.scene.frame_set(t + 1)
 
-        # FK SMPL-X pour cette frame (en frame SMPL-X : Y up, X right)
-        joints_smplx = _smplx_fk_body(
-            rest_joints, parents,
-            anim.global_orient[t], anim.body_pose[t],
-        )
+        # FK SMPL-X complet (55 joints : body + face + 2 mains)
+        joints_smplx = _smplx_fk_full(rest_joints, parents, anim, t)
 
         # Conversion frame SMPL-X → Blender. Empirique (cumulant Y-down de SMPL-X
         # et forward direction VRM) : (x, y, z) → (x, z, -y).
@@ -401,9 +408,10 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
 # Helpers FK SMPL-X + look-at retargeting
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Indices canoniques des joints SMPL-X body (0..21).
+# Indices canoniques des joints SMPL-X (55 au total).
 # Source : smplx.JOINT_NAMES.
 _SMPLX_JOINT_IDX = {
+    # Body (0..21)
     "pelvis": 0,
     "left_hip": 1, "right_hip": 2, "spine1": 3,
     "left_knee": 4, "right_knee": 5, "spine2": 6,
@@ -413,37 +421,91 @@ _SMPLX_JOINT_IDX = {
     "left_shoulder": 16, "right_shoulder": 17,
     "left_elbow": 18, "right_elbow": 19,
     "left_wrist": 20, "right_wrist": 21,
+    # Face (22..24)
+    "jaw": 22, "left_eye_smplhf": 23, "right_eye_smplhf": 24,
+    # Left hand (25..39)
+    "left_index1": 25, "left_index2": 26, "left_index3": 27,
+    "left_middle1": 28, "left_middle2": 29, "left_middle3": 30,
+    "left_pinky1": 31, "left_pinky2": 32, "left_pinky3": 33,
+    "left_ring1": 34, "left_ring2": 35, "left_ring3": 36,
+    "left_thumb1": 37, "left_thumb2": 38, "left_thumb3": 39,
+    # Right hand (40..54)
+    "right_index1": 40, "right_index2": 41, "right_index3": 42,
+    "right_middle1": 43, "right_middle2": 44, "right_middle3": 45,
+    "right_pinky1": 46, "right_pinky2": 47, "right_pinky3": 48,
+    "right_ring1": 49, "right_ring2": 50, "right_ring3": 51,
+    "right_thumb1": 52, "right_thumb2": 53, "right_thumb3": 54,
 }
+
+
+def _seg(start: str, end: str) -> tuple[int, int]:
+    return (_SMPLX_JOINT_IDX[start], _SMPLX_JOINT_IDX[end])
+
 
 # Mapping VRM bone → (start_joint_idx, end_joint_idx) en indices SMPL-X.
 # Le bone VRM est orienté du premier vers le second joint.
 _VRM_BONE_SEGMENTS: dict[str, tuple[int, int]] = {
-    "hips":          (0, 3),    # pelvis → spine1 (oriente le buste)
-    "spine":         (3, 6),    # spine1 → spine2
-    "chest":         (6, 9),    # spine2 → spine3
-    "upperChest":    (9, 12),   # spine3 → neck
-    "neck":          (12, 15),  # neck → head
-    "leftShoulder":  (9, 16),   # spine3 → left_shoulder
-    "leftUpperArm":  (16, 18),  # left_shoulder → left_elbow
-    "leftLowerArm":  (18, 20),  # left_elbow → left_wrist
-    "rightShoulder": (9, 17),
-    "rightUpperArm": (17, 19),
-    "rightLowerArm": (19, 21),
-    "leftUpperLeg":  (1, 4),    # left_hip → left_knee
-    "leftLowerLeg":  (4, 7),    # left_knee → left_ankle
-    "leftFoot":      (7, 10),   # left_ankle → left_foot
-    "rightUpperLeg": (2, 5),
-    "rightLowerLeg": (5, 8),
-    "rightFoot":     (8, 11),
+    # Body
+    "hips":          _seg("pelvis", "spine1"),
+    "spine":         _seg("spine1", "spine2"),
+    "chest":         _seg("spine2", "spine3"),
+    "upperChest":    _seg("spine3", "neck"),
+    "neck":          _seg("neck", "head"),
+    "leftShoulder":  _seg("spine3", "left_shoulder"),
+    "leftUpperArm":  _seg("left_shoulder", "left_elbow"),
+    "leftLowerArm":  _seg("left_elbow", "left_wrist"),
+    "leftHand":      _seg("left_wrist", "left_middle1"),
+    "rightShoulder": _seg("spine3", "right_shoulder"),
+    "rightUpperArm": _seg("right_shoulder", "right_elbow"),
+    "rightLowerArm": _seg("right_elbow", "right_wrist"),
+    "rightHand":     _seg("right_wrist", "right_middle1"),
+    "leftUpperLeg":  _seg("left_hip", "left_knee"),
+    "leftLowerLeg":  _seg("left_knee", "left_ankle"),
+    "leftFoot":      _seg("left_ankle", "left_foot"),
+    "rightUpperLeg": _seg("right_hip", "right_knee"),
+    "rightLowerLeg": _seg("right_knee", "right_ankle"),
+    "rightFoot":     _seg("right_ankle", "right_foot"),
+    # Left hand (15 bones)
+    "leftThumbProximal":      _seg("left_thumb1", "left_thumb2"),
+    "leftThumbIntermediate":  _seg("left_thumb2", "left_thumb3"),
+    "leftThumbDistal":        _seg("left_thumb2", "left_thumb3"),
+    "leftIndexProximal":      _seg("left_index1", "left_index2"),
+    "leftIndexIntermediate":  _seg("left_index2", "left_index3"),
+    "leftIndexDistal":        _seg("left_index2", "left_index3"),
+    "leftMiddleProximal":     _seg("left_middle1", "left_middle2"),
+    "leftMiddleIntermediate": _seg("left_middle2", "left_middle3"),
+    "leftMiddleDistal":       _seg("left_middle2", "left_middle3"),
+    "leftRingProximal":       _seg("left_ring1", "left_ring2"),
+    "leftRingIntermediate":   _seg("left_ring2", "left_ring3"),
+    "leftRingDistal":         _seg("left_ring2", "left_ring3"),
+    "leftLittleProximal":     _seg("left_pinky1", "left_pinky2"),
+    "leftLittleIntermediate": _seg("left_pinky2", "left_pinky3"),
+    "leftLittleDistal":       _seg("left_pinky2", "left_pinky3"),
+    # Right hand (15 bones) — symétrique
+    "rightThumbProximal":      _seg("right_thumb1", "right_thumb2"),
+    "rightThumbIntermediate":  _seg("right_thumb2", "right_thumb3"),
+    "rightThumbDistal":        _seg("right_thumb2", "right_thumb3"),
+    "rightIndexProximal":      _seg("right_index1", "right_index2"),
+    "rightIndexIntermediate":  _seg("right_index2", "right_index3"),
+    "rightIndexDistal":        _seg("right_index2", "right_index3"),
+    "rightMiddleProximal":     _seg("right_middle1", "right_middle2"),
+    "rightMiddleIntermediate": _seg("right_middle2", "right_middle3"),
+    "rightMiddleDistal":       _seg("right_middle2", "right_middle3"),
+    "rightRingProximal":       _seg("right_ring1", "right_ring2"),
+    "rightRingIntermediate":   _seg("right_ring2", "right_ring3"),
+    "rightRingDistal":         _seg("right_ring2", "right_ring3"),
+    "rightLittleProximal":     _seg("right_pinky1", "right_pinky2"),
+    "rightLittleIntermediate": _seg("right_pinky2", "right_pinky3"),
+    "rightLittleDistal":       _seg("right_pinky2", "right_pinky3"),
 }
 
 
 def _load_smplx_rest_skeleton():
-    """Charge rest joints SMPL-X + table des parents depuis SMPLX_NEUTRAL.npz.
+    """Charge tous les rest joints SMPL-X (55) + table des parents.
 
     Returns:
-        rest_joints (22, 3) : positions des 22 body joints en pose canonique (Y-up)
-        parents (22,)       : indice du parent pour chaque joint (-1 pour racine)
+        rest_joints (55, 3) : positions des 55 joints en pose canonique (frame SMPL-X)
+        parents (55,)       : indice du parent pour chaque joint (-1 ou très grand pour racine)
     """
     import numpy as np
     npz_path = REPO_ROOT / "pipeline" / "models" / "smplx" / "SMPLX_NEUTRAL.npz"
@@ -454,13 +516,12 @@ def _load_smplx_rest_skeleton():
     data = np.load(npz_path, allow_pickle=True)
     v_template = data["v_template"]
     J_regressor = data["J_regressor"]
-    # Le regressor peut être en sparse selon le format
     if hasattr(J_regressor, "toarray"):
         J_regressor = J_regressor.toarray()
     rest_joints = J_regressor @ v_template
     kintree = data["kintree_table"]
     parents = kintree[0].astype(np.int64)
-    return rest_joints[:22].astype(np.float64), parents[:22]
+    return rest_joints.astype(np.float64), parents
 
 
 def _aa_to_rot_mat(aa):
@@ -479,33 +540,50 @@ def _aa_to_rot_mat(aa):
     return np.eye(3) + np.sin(theta) * K + (1.0 - np.cos(theta)) * (K @ K)
 
 
-def _smplx_fk_body(rest_joints, parents, global_orient, body_pose):
-    """Forward kinematic SMPL-X (22 body joints).
+def _smplx_fk_full(rest_joints, parents, anim, t: int):
+    """Forward kinematic SMPL-X complet (55 joints : body + face + hands).
 
     Args:
-        rest_joints (22, 3) : positions rest des 22 body joints
-        parents (22,)        : indices parents
-        global_orient (3,)   : axis-angle racine
-        body_pose (21, 3)    : axis-angles des 21 joints non-root
+        rest_joints (55, 3) : positions rest canoniques
+        parents (55,)        : indices parents
+        anim                 : Animation à la frame t (utilise global_orient, body_pose,
+                               jaw_pose, leye_pose, reye_pose, left/right_hand_pose)
+        t                    : indice de frame
 
     Returns:
-        joints_world (22, 3) : positions monde après application des rotations
+        joints_world (55, 3) : positions monde après application des rotations
     """
     import numpy as np
 
-    # Rotations locales de chaque joint (22)
-    rotations = np.zeros((22, 3, 3), dtype=np.float64)
-    rotations[0] = _aa_to_rot_mat(global_orient)
+    n = 55
+    rotations = np.zeros((n, 3, 3), dtype=np.float64)
+    # 0 = pelvis = global_orient
+    rotations[0] = _aa_to_rot_mat(anim.global_orient[t])
+    # 1..21 = body_pose
     for i in range(21):
-        rotations[i + 1] = _aa_to_rot_mat(body_pose[i])
+        rotations[i + 1] = _aa_to_rot_mat(anim.body_pose[t, i])
+    # 22 = jaw, 23 = left eye, 24 = right eye
+    rotations[22] = _aa_to_rot_mat(anim.jaw_pose[t])
+    rotations[23] = _aa_to_rot_mat(anim.leye_pose[t])
+    rotations[24] = _aa_to_rot_mat(anim.reye_pose[t])
+    # 25..39 = left hand (15 joints)
+    for i in range(15):
+        rotations[25 + i] = _aa_to_rot_mat(anim.left_hand_pose[t, i])
+    # 40..54 = right hand (15 joints)
+    for i in range(15):
+        rotations[40 + i] = _aa_to_rot_mat(anim.right_hand_pose[t, i])
 
-    # FK : pour chaque joint, position = parent_world_pos + parent_world_rot @ rel
-    joints_world = np.zeros((22, 3), dtype=np.float64)
-    rot_world = np.zeros((22, 3, 3), dtype=np.float64)
+    joints_world = np.zeros((n, 3), dtype=np.float64)
+    rot_world = np.zeros((n, 3, 3), dtype=np.float64)
     joints_world[0] = rest_joints[0]
     rot_world[0] = rotations[0]
-    for i in range(1, 22):
+    for i in range(1, n):
         p = int(parents[i])
+        if p < 0 or p >= n:
+            # Root sans parent valide (peut arriver pour les hand joints sur certains exports)
+            joints_world[i] = rest_joints[i]
+            rot_world[i] = rotations[i]
+            continue
         rel = rest_joints[i] - rest_joints[p]
         joints_world[i] = joints_world[p] + rot_world[p] @ rel
         rot_world[i] = rot_world[p] @ rotations[i]
