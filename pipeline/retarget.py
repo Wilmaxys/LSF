@@ -363,29 +363,77 @@ def _convert_animation_to_amass_npz(anim: Animation, output_path: str,
     )
 
 
+def _bake_rotations_manual(src_armature, tgt_armature, vrm_metadata: dict,
+                            num_frames: int) -> None:
+    """Bake direct des rotations locales source SMPL-X → target VRM.
+
+    Hypothèse : SMPL-X et VRM partagent la convention humanoid T-pose
+    canonique. Les rotations locales (joint relatif à son parent dans la rest
+    pose) sont donc directement transférables d'une armature à l'autre.
+
+    Pour chaque frame :
+        - Avance la scène (le SMPL-X Add-on a baked les keyframes sur l'armature
+          source, donc pose_bone.rotation_quaternion = pose à cette frame)
+        - Pour chaque (src_name, tgt_name) du mapping _SMPLX_TO_VRM_BONE_NAME :
+            copie src_pb.rotation_quaternion → tgt_pb.rotation_quaternion
+            insère un keyframe sur le target.
+    """
+    import bpy
+
+    humanoid_bones = vrm_metadata["humanoid_bones"]
+    src_pose_bones = src_armature.pose.bones
+    tgt_pose_bones = tgt_armature.pose.bones
+
+    pairs: list[tuple[str, str]] = []
+    for smplx_name, vrm_role in _SMPLX_TO_VRM_BONE_NAME.items():
+        if smplx_name not in src_pose_bones:
+            continue
+        target_name = humanoid_bones.get(vrm_role)
+        if target_name is None or target_name not in tgt_pose_bones:
+            continue
+        pairs.append((smplx_name, target_name))
+
+    logger.info("Bake manuel : %d paires sur %d frames", len(pairs), num_frames)
+
+    for _, tgt_name in pairs:
+        tgt_pose_bones[tgt_name].rotation_mode = "QUATERNION"
+
+    # Crée l'action sur le target si elle n'existe pas
+    if tgt_armature.animation_data is None:
+        tgt_armature.animation_data_create()
+    if tgt_armature.animation_data.action is None:
+        action = bpy.data.actions.new(name=f"{tgt_armature.name}_retargeted")
+        tgt_armature.animation_data.action = action
+
+    for f in range(num_frames):
+        bpy.context.scene.frame_set(f + 1)
+        for src_name, tgt_name in pairs:
+            src_pb = src_pose_bones[src_name]
+            tgt_pb = tgt_pose_bones[tgt_name]
+            q = src_pb.rotation_quaternion
+            tgt_pb.rotation_quaternion = (q.w, q.x, q.y, q.z)
+            tgt_pb.keyframe_insert(data_path="rotation_quaternion", frame=f + 1)
+
+    logger.info("Bake manuel terminé : %d keyframes (%d frames × %d bones)",
+                num_frames * len(pairs), num_frames, len(pairs))
+
+
 def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
-    """Retargete l'animation SMPL-X sur le VRM via SMPL-X Blender Add-on + Rokoko.
+    """Retargete l'animation SMPL-X sur le VRM.
 
     Étapes :
     1. Convertit anim → NPZ AMASS dans un fichier temp.
-    2. Active les addons SMPL-X et Rokoko.
-    3. bpy.ops.object.smplx_add_animation(filepath=...) crée une armature SMPL-X
-       source avec les rest poses + rotations correctes par construction.
-    4. Configure Rokoko : source = SMPL-X armature, target = VRM armature.
-    5. bpy.ops.rsl.build_bone_list() + bpy.ops.rsl.retarget_animation() bake
-       le retargeting sur le VRM.
-    6. Cleanup : retire l'armature source.
-
-    Cette approche remplace l'ancien custom look-at math car les conventions
-    d'axes/rest poses sont gérées par les addons éprouvés.
+    2. SMPL-X Blender Add-on importe l'animation sur une armature source.
+    3. Bake manuel des rotations locales source → target via notre table de
+       mapping. Plus de Rokoko : son comportement (entries filtrées, fingers
+       partiellement mappés) était trop opaque pour itérer dessus.
+    4. Cleanup : retire l'armature source.
     """
     import bpy, addon_utils
     import tempfile
     from pathlib import Path as _Path
 
-    # 1. Active les addons requis
     addon_utils.enable("bl_ext.user_default.smplx_blender_addon")
-    addon_utils.enable("rokoko_studio_live_blender")
 
     # 2. Sauvegarde notre anim au format AMASS dans un temp file
     tmp_dir = _Path(tempfile.mkdtemp(prefix="lsf_amass_"))
@@ -425,16 +473,14 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
     logger.info("Armature source SMPL-X : %s", smplx_armature.name)
     logger.info("Armature target VRM    : %s", armature.name)
 
-    # 5. Configure Rokoko et bake le retargeting.
-    # On skippe build_bone_list() : l'auto-détection laisse des orphelins
-    # (entrées target sans source) qui empêchaient nos mappings explicites
-    # de transférer l'animation sur certaines phalanges.
-    bpy.context.scene.rsl_retargeting_armature_source = smplx_armature
-    bpy.context.scene.rsl_retargeting_armature_target = armature
-    _populate_rokoko_bone_mapping(smplx_armature, armature, vrm_metadata)
-    logger.info("Rokoko bone list construite — lancement retarget…")
-    bpy.ops.rsl.retarget_animation()
-    logger.info("Rokoko retargeting terminé")
+    # 5. Bake manuel des rotations : Rokoko avait des comportements opaques
+    # (entries filtrées, retargeting partiel sur les doigts), on prend le
+    # contrôle direct. Pour chaque frame, on calcule la rotation LOCALE de
+    # chaque bone source SMPL-X et on l'écrit comme pose.rotation_quaternion
+    # sur le bone target VRM. Ça marche parce que SMPL-X et VRM ont la même
+    # rest pose canonique humanoid (T-pose) — donc une rotation locale joint
+    # → parent dans l'un est valide dans l'autre.
+    _bake_rotations_manual(smplx_armature, armature, vrm_metadata, anim.num_frames)
 
     # 6. Bloque la position du hips à sa rest pose.
     # Rokoko copie la location world-space du pelvis source vers le hips du VRM.
