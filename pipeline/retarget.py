@@ -423,12 +423,22 @@ def _export(output_path: Path, fps: float, num_frames: int) -> None:
 
 
 def _aa_to_blender_quat(aa: np.ndarray):
-    """Convertit axis-angle (3,) en mathutils.Quaternion (w, x, y, z)."""
+    """Convertit axis-angle (3,) SMPL-X (Y-up) en mathutils.Quaternion Blender (Z-up).
+
+    SMPL-X : Y up, Z forward (vers la caméra)
+    Blender : Z up, -Y forward (Y vers la scène)
+    Conversion d'axe : (ax, ay, az) SMPL-X → (ax, -az, ay) Blender.
+
+    NOTE : ça fixe l'orientation globale (corps à l'endroit). Mais les rotations
+    de bones individuels (coudes, genoux…) restent dépendantes du delta entre
+    rest pose SMPL-X (A-pose) et VRM (T-pose) — pas encore compensé ici.
+    """
     from mathutils import Quaternion, Vector
-    angle = float(np.linalg.norm(aa))
+    aa_blender = np.array([aa[0], -aa[2], aa[1]], dtype=float)
+    angle = float(np.linalg.norm(aa_blender))
     if angle < 1e-8:
         return Quaternion((1.0, 0.0, 0.0, 0.0))
-    axis = (aa / angle).astype(float)
+    axis = (aa_blender / angle).astype(float)
     return Quaternion(Vector(axis), angle)
 
 
