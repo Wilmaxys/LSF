@@ -340,12 +340,14 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
             anim.global_orient[t], anim.body_pose[t],
         )
 
-        # SMPL-X (X right, Y up, Z forward) → Blender (X right, Y forward, Z up).
-        # Empiriquement (testé visuellement) : (x, y, z) → (x, -z, y).
+        # Conversion frame SMPL-X → Blender.
+        # Le SMPL-X v_template de la NPZ neutre est en Y-down (head à Y négatif).
+        # Plus la Z forward inversée pour la convention Blender. Le mapping
+        # qui place l'avatar debout, face caméra, est (x, y, z) → (x, -z, -y).
         joints_blender = np.column_stack([
             joints_smplx[:, 0],
             -joints_smplx[:, 2],
-            joints_smplx[:, 1],
+            -joints_smplx[:, 1],
         ])
 
         # On track nos propres pose matrices (en armature space) au lieu de
