@@ -164,6 +164,23 @@ _VRM1_PRESET_EXPRESSIONS: tuple[str, ...] = (
 )
 
 
+def _normalize_vrm_bone_name(name: str) -> str:
+    """Normalise un nom de bone VRM vers le camelCase VRM 1.0.
+
+    Accepte plusieurs formats que l'API VRM expose selon le contexte :
+        "LEFT_INDEX_PROXIMAL"             → "leftIndexProximal"
+        "left_index_proximal"             → "leftIndexProximal"
+        "HumanBoneName.LEFT_INDEX_DISTAL" → "leftIndexDistal"
+        "leftIndexProximal"               → "leftIndexProximal"
+    """
+    if "." in name:
+        name = name.rsplit(".", 1)[-1]
+    if "_" in name:
+        parts = name.lower().split("_")
+        return parts[0] + "".join(p.capitalize() for p in parts[1:])
+    return name
+
+
 def _inspect_vrm_via_addon(armature) -> dict:
     """Lit l'extension VRM stockée par l'addon dans armature.data.vrm_addon_extension.
 
@@ -236,14 +253,19 @@ def _inspect_vrm_via_addon(armature) -> dict:
     # en format 0.x (les "Duplicated VRM0 bone" warnings dans l'addon). Le mapping
     # VRM 1.0 peut être quasi-vide, mais le 0.x est complet. On merge les deux,
     # en privilégiant ce qui a déjà été trouvé en 1.0.
+    # IMPORTANT : `hb.bone` en VRM 0.x peut être renvoyé en UPPERCASE_SNAKE_CASE
+    # (ex. "LEFT_INDEX_PROXIMAL") par l'enum Python. On normalise vers le
+    # camelCase VRM 1.0 ("leftIndexProximal") pour un lookup cohérent.
     vrm0 = getattr(ext, "vrm0", None)
     if vrm0 is not None and getattr(vrm0, "humanoid", None) is not None:
         n_before = len(humanoid_bones)
         for hb in vrm0.humanoid.human_bones:
             vrm_bone_name = getattr(hb, "bone", None)
             node_bone = getattr(getattr(hb, "node", None), "bone_name", None)
-            if vrm_bone_name and node_bone and vrm_bone_name not in humanoid_bones:
-                humanoid_bones[vrm_bone_name] = node_bone
+            if vrm_bone_name and node_bone:
+                normalized = _normalize_vrm_bone_name(str(vrm_bone_name))
+                if normalized not in humanoid_bones:
+                    humanoid_bones[normalized] = node_bone
         if len(humanoid_bones) > n_before and n_before > 0:
             # VRM 1.0 partiel + VRM 0.x complétant → on garde version=1.0
             logger.info("Bones complétés depuis VRM 0.x : +%d", len(humanoid_bones) - n_before)
@@ -262,6 +284,15 @@ def _inspect_vrm_via_addon(armature) -> dict:
             "Aucun bone humanoïde trouvé via l'API VRM addon. "
             "L'avatar est-il bien un VRM conforme ?"
         )
+
+    # Diagnostic : si des bones de doigts manquent, ça expliquera des animations
+    # cassées sur les phalanges (le mapping côté retargeting échoue silencieusement)
+    finger_roles = {"leftIndexProximal", "leftIndexIntermediate", "leftIndexDistal"}
+    missing_fingers = finger_roles - humanoid_bones.keys()
+    if missing_fingers:
+        logger.warning("Rôles VRM doigts manquants : %s", sorted(missing_fingers))
+        logger.warning("Clés humanoid_bones disponibles (50 premières) : %s",
+                       sorted(humanoid_bones.keys())[:50])
 
     # Rest poses : matrix_local de chaque bone Blender mappé
     rest_poses_local: dict[str, np.ndarray] = {}
@@ -394,13 +425,12 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
     logger.info("Armature source SMPL-X : %s", smplx_armature.name)
     logger.info("Armature target VRM    : %s", armature.name)
 
-    # 5. Configure Rokoko et bake le retargeting
+    # 5. Configure Rokoko et bake le retargeting.
+    # On skippe build_bone_list() : l'auto-détection laisse des orphelins
+    # (entrées target sans source) qui empêchaient nos mappings explicites
+    # de transférer l'animation sur certaines phalanges.
     bpy.context.scene.rsl_retargeting_armature_source = smplx_armature
     bpy.context.scene.rsl_retargeting_armature_target = armature
-    bpy.ops.rsl.build_bone_list()
-
-    # Auto-détection de Rokoko ne reconnait pas les noms SMPL-X (`pelvis`,
-    # `left_hip`, etc.). On force le mapping nous-mêmes.
     _populate_rokoko_bone_mapping(smplx_armature, armature, vrm_metadata)
     logger.info("Rokoko bone list construite — lancement retarget…")
     bpy.ops.rsl.retarget_animation()
@@ -514,25 +544,33 @@ def _populate_rokoko_bone_mapping(source_arm, target_arm, vrm_metadata: dict) ->
                 len(source_bone_names),
                 sorted(source_bone_names)[:5])
 
-    # Clear toute la liste (auto-matched de build_bone_list peut créer des
-    # duplicates target avec nos mappings explicites)
-    bone_list.clear()
+    # Clear robuste : `.clear()` peut être muet selon la version Blender, on
+    # supprime explicitement chaque item.
+    while len(bone_list) > 0:
+        bone_list.remove(0)
 
-    # Vérifie quels attributs sont disponibles sur le PropertyGroup item
-    # (selon la version Rokoko : bone_name_key/bone_name_source/name + bone_name_target/target)
+    # Sonde une fois les attributs réels (varient selon les versions Rokoko)
+    probe = bone_list.add()
+    item_attrs = [a for a in dir(probe) if not a.startswith("_") and not callable(getattr(probe, a, None))]
+    bone_list.remove(0)
+    logger.info("Rokoko bone_list item attrs : %s", item_attrs)
+
     n_mapped = 0
     n_target_missing = 0
+    n_source_missing = 0
     used_targets: set[str] = set()
+    missing_roles: list[str] = []
 
     for smplx_name, vrm_role in _SMPLX_TO_VRM_BONE_NAME.items():
         if smplx_name not in source_bone_names:
+            n_source_missing += 1
             continue
         target_name = humanoid_bones.get(vrm_role)
         if target_name is None or target_name not in target_bone_names:
             n_target_missing += 1
+            missing_roles.append(vrm_role)
             continue
         if target_name in used_targets:
-            # Ne devrait pas arriver avec notre table 1:1, mais filet de sécurité
             continue
 
         item = bone_list.add()
@@ -547,8 +585,12 @@ def _populate_rokoko_bone_mapping(source_arm, target_arm, vrm_metadata: dict) ->
         used_targets.add(target_name)
         n_mapped += 1
 
-    logger.info("Rokoko mapping : %d bones mappés (target manquant: %d)",
-                n_mapped, n_target_missing)
+    logger.info(
+        "Rokoko mapping : %d mappés / %d source manquant / %d target manquant",
+        n_mapped, n_source_missing, n_target_missing,
+    )
+    if missing_roles:
+        logger.warning("Rôles VRM non-mappés : %s", missing_roles[:20])
 
 
 def _bake_animation_OLD_LOOKAT(armature, anim: Animation, vrm_metadata: dict) -> None:
