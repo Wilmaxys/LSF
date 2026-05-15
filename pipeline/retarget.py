@@ -231,23 +231,31 @@ def _inspect_vrm_via_addon(armature) -> dict:
                     if name:
                         expressions.append(str(name))
 
-    # ── VRM 0.x (fallback) ────────────────────────────────────────────────
-    if not humanoid_bones:
-        version = "0.x"
-        vrm0 = getattr(ext, "vrm0", None)
-        if vrm0 is not None and getattr(vrm0, "humanoid", None) is not None:
-            for hb in vrm0.humanoid.human_bones:
-                vrm_bone_name = getattr(hb, "bone", None)
-                node_bone = getattr(getattr(hb, "node", None), "bone_name", None)
-                if vrm_bone_name and node_bone:
-                    humanoid_bones[vrm_bone_name] = node_bone
+    # ── VRM 0.x (merge avec VRM 1.0) ─────────────────────────────────────
+    # Beaucoup de VRM "1.0" exportés depuis VRoid contiennent EN PLUS les bones
+    # en format 0.x (les "Duplicated VRM0 bone" warnings dans l'addon). Le mapping
+    # VRM 1.0 peut être quasi-vide, mais le 0.x est complet. On merge les deux,
+    # en privilégiant ce qui a déjà été trouvé en 1.0.
+    vrm0 = getattr(ext, "vrm0", None)
+    if vrm0 is not None and getattr(vrm0, "humanoid", None) is not None:
+        n_before = len(humanoid_bones)
+        for hb in vrm0.humanoid.human_bones:
+            vrm_bone_name = getattr(hb, "bone", None)
+            node_bone = getattr(getattr(hb, "node", None), "bone_name", None)
+            if vrm_bone_name and node_bone and vrm_bone_name not in humanoid_bones:
+                humanoid_bones[vrm_bone_name] = node_bone
+        if len(humanoid_bones) > n_before and n_before > 0:
+            # VRM 1.0 partiel + VRM 0.x complétant → on garde version=1.0
+            logger.info("Bones complétés depuis VRM 0.x : +%d", len(humanoid_bones) - n_before)
+        elif n_before == 0:
+            version = "0.x"
 
-            blend_master = getattr(vrm0, "blend_shape_master", None)
-            if blend_master is not None:
-                for grp in getattr(blend_master, "blend_shape_groups", []):
-                    name = getattr(grp, "preset_name", None) or getattr(grp, "name", None)
-                    if name:
-                        expressions.append(str(name).lower())
+        blend_master = getattr(vrm0, "blend_shape_master", None)
+        if blend_master is not None and not expressions:
+            for grp in getattr(blend_master, "blend_shape_groups", []):
+                name = getattr(grp, "preset_name", None) or getattr(grp, "name", None)
+                if name:
+                    expressions.append(str(name).lower())
 
     if not humanoid_bones:
         raise RuntimeError(
