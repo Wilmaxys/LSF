@@ -365,30 +365,32 @@ def _convert_animation_to_amass_npz(anim: Animation, output_path: str,
 
 def _override_finger_rotations(src_armature, tgt_armature, vrm_metadata: dict,
                                 num_frames: int) -> None:
-    """Override les rotations des bones doigts en copiant la matrix world-space
-    de l'armature SMPL-X vers le VRM, frame par frame.
+    """Override les rotations des bones doigts via rest-pose conjugation.
 
-    Pourquoi : Rokoko foire les doigts (orphelins sans source dans son
-    bone_list → rotations effacées). Le diag a confirmé que l'armature SMPL-X
-    contient exactement les bonnes rotations (diff = 0.0000). Bypass de Rokoko
-    pour les fingers en lisant directement la matrix world-space de la source
-    et l'appliquant sur le target. Setter pose_bone.matrix triggers Blender
-    pour calculer la rotation locale correcte qui produit cette orientation
-    world — donc compense automatiquement les différences de rest pose entre
-    les deux squelettes (orientation locale des bones de doigts diffère entre
-    SMPL-X et VRoid).
+    Pourquoi : Rokoko foire les doigts (orphelins sans source dans son bone_list
+    → rotations écrasées). Le diag a confirmé que l'armature SMPL-X contient
+    exactement les bonnes rotations locales (diff = 0.0000).
 
-    Processing en ordre hiérarchique (proximal → distal) parce que la matrix
-    world d'un finger3 dépend du pose de son parent finger2.
+    Le précédent essai (set pose_bone.matrix world-space) alignait les frames
+    complets des bones, mais ratait à cause du **bone roll** : SMPL-X et VRoid
+    n'ont pas la même orientation locale (axe X vs Y le long du doigt). Résultat :
+    fingers à 90° du sens attendu.
+
+    Formule correcte (conjugaison par offset de rest pose) :
+        tgt_local_pose = correction @ src_local_pose @ correction⁻¹
+        correction = inv(tgt_rest_parent_relative) @ src_rest_parent_relative
+
+    Ça transforme une rotation locale du repère SMPL-X vers le repère VRM tout
+    en préservant la sémantique "le doigt se plie de N° autour de son axe naturel".
     """
     import bpy
+    from mathutils import Quaternion
 
     humanoid_bones = vrm_metadata["humanoid_bones"]
     src_pose_bones = src_armature.pose.bones
     tgt_pose_bones = tgt_armature.pose.bones
 
-    # Ordre hiérarchique : proximal (1), intermediate (2), distal (3)
-    levels: list[list[tuple[str, str]]] = [[], [], []]
+    finger_pairs: list[tuple[str, str]] = []
     for smplx_name, vrm_role in _SMPLX_TO_VRM_BONE_NAME.items():
         if not any(k in smplx_name for k in ("index", "middle", "ring", "pinky", "thumb")):
             continue
@@ -397,41 +399,49 @@ def _override_finger_rotations(src_armature, tgt_armature, vrm_metadata: dict,
         target_name = humanoid_bones.get(vrm_role)
         if target_name is None or target_name not in tgt_pose_bones:
             continue
-        # Le suffixe 1/2/3 du nom SMPL-X donne le niveau hiérarchique.
-        for level, suffix in enumerate(("1", "2", "3")):
-            if smplx_name.endswith(suffix):
-                levels[level].append((smplx_name, target_name))
-                break
+        finger_pairs.append((smplx_name, target_name))
 
-    total_pairs = sum(len(l) for l in levels)
-    if total_pairs == 0:
+    if not finger_pairs:
         logger.warning("Override doigts : aucune paire trouvée")
         return
-    logger.info("Override doigts (world-space) : %d paires, %d frames",
-                total_pairs, num_frames)
 
-    for level in levels:
-        for _, tgt_name in level:
-            tgt_pose_bones[tgt_name].rotation_mode = "QUATERNION"
+    # Pre-calcule l'offset de rest pose par paire (parent-relatif).
+    corrections: dict[tuple[str, str], Quaternion] = {}
+    for src_name, tgt_name in finger_pairs:
+        src_bone = src_armature.data.bones[src_name]
+        tgt_bone = tgt_armature.data.bones[tgt_name]
+        # matrix_local est en armature space (chaînée à travers les parents).
+        # Pour avoir le rest "relatif au parent" on inverse le parent.
+        if src_bone.parent:
+            src_local_rest = src_bone.parent.matrix_local.inverted() @ src_bone.matrix_local
+        else:
+            src_local_rest = src_bone.matrix_local.copy()
+        if tgt_bone.parent:
+            tgt_local_rest = tgt_bone.parent.matrix_local.inverted() @ tgt_bone.matrix_local
+        else:
+            tgt_local_rest = tgt_bone.matrix_local.copy()
+        src_rest_q = src_local_rest.to_3x3().to_quaternion()
+        tgt_rest_q = tgt_local_rest.to_3x3().to_quaternion()
+        corrections[(src_name, tgt_name)] = tgt_rest_q.inverted() @ src_rest_q
 
-    # Sauvegarde le frame actuel, traite chaque frame
+    logger.info("Override doigts (rest-pose conjugation) : %d paires, %d frames",
+                len(finger_pairs), num_frames)
+
+    for _, tgt_name in finger_pairs:
+        tgt_pose_bones[tgt_name].rotation_mode = "QUATERNION"
+
     saved_frame = bpy.context.scene.frame_current
     for f in range(num_frames):
         bpy.context.scene.frame_set(f + 1)
-        # Force update du depsgraph pour évaluer la pose courante
         bpy.context.view_layer.update()
-        # Traite par niveau pour que matrix.parent soit déjà à jour
-        for level in levels:
-            for src_name, tgt_name in level:
-                src_pb = src_pose_bones[src_name]
-                tgt_pb = tgt_pose_bones[tgt_name]
-                # Copy world rotation, garde translation/scale du target
-                new_mat = src_pb.matrix.copy()
-                new_mat.translation = tgt_pb.matrix.translation
-                tgt_pb.matrix = new_mat
-                tgt_pb.keyframe_insert(data_path="rotation_quaternion", frame=f + 1)
-            # Update entre niveaux pour que le child voit le parent posé
-            bpy.context.view_layer.update()
+        for src_name, tgt_name in finger_pairs:
+            src_pb = src_pose_bones[src_name]
+            tgt_pb = tgt_pose_bones[tgt_name]
+            src_q = src_pb.rotation_quaternion
+            corr = corrections[(src_name, tgt_name)]
+            tgt_q = corr @ src_q @ corr.inverted()
+            tgt_pb.rotation_quaternion = tgt_q
+            tgt_pb.keyframe_insert(data_path="rotation_quaternion", frame=f + 1)
     bpy.context.scene.frame_set(saved_frame)
     logger.info("Override doigts terminé")
 
