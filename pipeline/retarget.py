@@ -310,9 +310,15 @@ def _convert_animation_to_amass_npz(anim: Animation, output_path: str,
     poses[:, 75:120] = anim.left_hand_pose.reshape(T, -1)
     poses[:, 120:165] = anim.right_hand_pose.reshape(T, -1)
 
+    # Pour la LSF on veut que le signeur reste en place sur l'avatar. SMPLer-X
+    # produit `transl` en repère caméra (souvent décalé de plusieurs mètres),
+    # ce qui téléporterait le personnage. On force trans=0 — Rokoko ne baque
+    # alors que les rotations.
+    trans = np.zeros((T, 3), dtype=np.float32)
+
     np.savez(
         output_path,
-        trans=anim.transl.astype(np.float32),
+        trans=trans,
         gender=np.array(gender),
         mocap_frame_rate=np.int32(round(anim.fps)),
         betas=anim.betas.astype(np.float32)[:10],
@@ -355,9 +361,13 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
     # Note : le mode_set ferme bien le contexte si on est en autre chose
     if bpy.context.mode != "OBJECT":
         bpy.ops.object.mode_set(mode="OBJECT")
+    # anim_format="AMASS" : l'addon applique la rotation X+90° qui convertit
+    # le repère SMPL-X canonique (Y-up, Z-forward) vers le repère Blender (Z-up,
+    # -Y-forward). Notre NPZ contient des poses SMPL-X brutes depuis SMPLer-X,
+    # donc dans le repère SMPL-X canonique → besoin de la conversion.
     bpy.ops.object.smplx_add_animation(
         filepath=str(amass_path),
-        anim_format="SMPL-X",
+        anim_format="AMASS",
         target_framerate=target_framerate,
     )
 
