@@ -45,9 +45,18 @@ def run_hamer(
     input_npz: Path,
     output_npz: Path,
     config: dict,
+    debug_overlay_dir: Path | None = None,
 ) -> None:
-    """Lance HaMeR et raffine les mains dans l'animation."""
+    """Lance HaMeR et raffine les mains dans l'animation.
+
+    Si `debug_overlay_dir` est fourni, écrit une PNG par frame avec la mesh
+    MANO superposée sur l'image source. Permet de vérifier visuellement ce
+    que HaMeR détecte (sans interférence du retargeting downstream).
+    """
     logger.info("HaMeR : %s (raffinement mains)", input_npz)
+    if debug_overlay_dir is not None:
+        debug_overlay_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("Debug overlay HaMeR : écriture dans %s", debug_overlay_dir)
 
     # HaMeR + ViTPose utilisent des chemins relatifs `./_DATA/...` partout
     # (config, weights, MANO mean params, etc.). On chdir à la racine du repo
@@ -57,7 +66,7 @@ def run_hamer(
     _orig_cwd = os.getcwd()
     os.chdir(str(repo))
     try:
-        _run_hamer_impl(video_path, input_npz, output_npz, config)
+        _run_hamer_impl(video_path, input_npz, output_npz, config, debug_overlay_dir)
     finally:
         os.chdir(_orig_cwd)
 
@@ -67,6 +76,7 @@ def _run_hamer_impl(
     input_npz: Path,
     output_npz: Path,
     config: dict,
+    debug_overlay_dir: Path | None = None,
 ) -> None:
     anim = Animation.load(input_npz)
     detector = _load_body_detector()
@@ -82,6 +92,21 @@ def _run_hamer_impl(
     sys.path.insert(0, str(repo))
     from hamer.datasets.vitdet_dataset import ViTDetDataset  # type: ignore[import-not-found]
     from hamer.utils import recursive_to  # type: ignore[import-not-found]
+
+    # Renderer optionnel pour le debug overlay : mesh MANO sur frame source.
+    renderer = None
+    cam_crop_to_full = None
+    scaled_focal_length: float = 0.0
+    if debug_overlay_dir is not None:
+        try:
+            from hamer.utils.renderer import Renderer, cam_crop_to_full as _ccf  # type: ignore[import-not-found]
+            renderer = Renderer(hamer_cfg, faces=hamer_model.mano.faces)
+            cam_crop_to_full = _ccf
+            scaled_focal_length = hamer_cfg.EXTRA.FOCAL_LENGTH / hamer_cfg.MODEL.IMAGE_SIZE
+            logger.info("Renderer HaMeR initialisé (focal=%.1f)", scaled_focal_length)
+        except Exception as e:
+            logger.warning("Impossible d'initialiser le renderer HaMeR : %s", e)
+            debug_overlay_dir = None
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -181,6 +206,50 @@ def _run_hamer_impl(
                     else:
                         anim.left_hand_pose[t] = fingers_15
                         anim.confidence_lhand[t] = score
+
+                # Debug overlay : rend la mesh MANO prédite sur la frame source
+                if renderer is not None and debug_overlay_dir is not None:
+                    try:
+                        verts_b = out["pred_vertices"].detach().cpu().numpy()  # (B, 778, 3)
+                        # Pour la main gauche, HaMeR flippe X dans le crop → on
+                        # désinverse pour aligner avec l'image source.
+                        rights = batch["right"].cpu().numpy()
+                        for i in range(verts_b.shape[0]):
+                            verts_b[i, :, 0] = (2 * rights[i] - 1) * verts_b[i, :, 0]
+
+                        # Camera : crop → frame entière
+                        box_center = batch["box_center"].cpu().numpy()
+                        box_size = batch["box_size"].cpu().numpy()
+                        H, W = frame_bgr.shape[:2]
+                        img_size_t = torch.tensor([[W, H]] * verts_b.shape[0], dtype=torch.float32)
+                        focal_full = scaled_focal_length * max(W, H)
+                        cam_full = cam_crop_to_full(
+                            out["pred_cam"].detach().cpu(),
+                            torch.tensor(box_center, dtype=torch.float32),
+                            torch.tensor(box_size, dtype=torch.float32),
+                            img_size_t,
+                            focal_full,
+                        ).numpy()  # (B, 3)
+
+                        rgba = renderer.render_rgba_multiple(
+                            [verts_b[i] for i in range(verts_b.shape[0])],
+                            cam_t=[cam_full[i] for i in range(cam_full.shape[0])],
+                            render_res=[W, H],
+                            is_right=[bool(rights[i]) for i in range(rights.shape[0])],
+                            focal_length=focal_full,
+                        )  # (H, W, 4) float ∈ [0,1]
+
+                        # Composite : source BGR + mesh RGBA
+                        src = frame_bgr.astype(np.float32) / 255.0  # BGR
+                        src_rgb = src[:, :, ::-1]  # → RGB
+                        alpha = rgba[:, :, 3:4]
+                        composite = src_rgb * (1 - alpha) + rgba[:, :, :3] * alpha
+                        composite_bgr = (composite[:, :, ::-1] * 255).clip(0, 255).astype(np.uint8)
+                        out_path = debug_overlay_dir / f"frame_{t:04d}.png"
+                        cv2.imwrite(str(out_path), composite_bgr)
+                    except Exception as e:
+                        if t == 0:
+                            logger.warning("Échec rendu overlay frame 0 : %s", e)
     finally:
         cap.release()
 
@@ -201,34 +270,13 @@ def _run_hamer_impl(
         LOW_CONF, int(low_l.sum()), int(low_r.sum()), len(anim.confidence_lhand),
     )
 
-    # ── Compensation MANO `hands_mean` ───────────────────────────────────
-    # HaMeR prédit les rotations en convention "flat rest" (axis-angle = 0
-    # → main plate). Mais la lib SMPL-X côté Blender Add-on configure MANO
-    # avec `flat_hand_mean=False` (convention courante), donc en interne :
-    #     rotation_finale = hand_pose + hands_mean
-    # Pour qu'une main plate (rotation_finale=0) sorte correctement à
-    # l'écran, on stocke ici `hand_pose = pred_HaMeR - hands_mean` ; SMPL-X
-    # rajoute hands_mean au load, net = pred_HaMeR. Sans cette correction
-    # les doigts apparaissent enroulés vers la paume (mean curl ≈ 25°/joint).
-    hands_mean_r = _load_hands_mean()  # (45,) right hand
-    if hands_mean_r is not None:
-        hm_r = hands_mean_r.reshape(NUM_HAND_JOINTS, 3).astype(np.float32)
-        # Pour la main gauche : on miroite en flippant Y et Z (cohérent avec
-        # le flip qu'on applique déjà sur les axis-angles main gauche).
-        hm_l = hm_r.copy()
-        hm_l[:, 1] *= -1
-        hm_l[:, 2] *= -1
-        anim.right_hand_pose = anim.right_hand_pose - hm_r[None, :, :]
-        anim.left_hand_pose = anim.left_hand_pose - hm_l[None, :, :]
-        logger.info(
-            "Compensation hands_mean appliquée (L2 right=%.3f, left=%.3f)",
-            float(np.linalg.norm(hm_r)), float(np.linalg.norm(hm_l)),
-        )
-    else:
-        logger.warning(
-            "MANO_RIGHT.pkl introuvable — pas de compensation hands_mean, "
-            "les doigts pourraient apparaître enroulés à tort."
-        )
+    # NOTE : on avait testé une compensation `-= hands_mean` ici en supposant
+    # un décalage de convention MANO entre HaMeR (flat-rest) et SMPL-X Add-on
+    # (mean-rest). Empiriquement les doigts partent en hyperextension : c'est
+    # que HaMeR ET SMPL-X Add-on utilisent la même convention (probablement
+    # flat-rest des deux côtés). Aucune compensation ne doit être appliquée.
+    # Les imperfections de pose des doigts restantes viennent du tracker
+    # HaMeR lui-même, pas d'un bug de convention.
 
     anim = anim.with_meta(
         stage="hamer",
@@ -376,11 +424,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--config", type=str, default="{}")
+    parser.add_argument(
+        "--debug-overlay", type=Path, default=None,
+        help="Dossier de sortie pour les PNG overlay mesh MANO (debug HaMeR).",
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO,
                         format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
     config = json.loads(args.config)
-    run_hamer(args.video, args.input, args.output, config)
+    run_hamer(args.video, args.input, args.output, config, debug_overlay_dir=args.debug_overlay)
     return 0
 
 
