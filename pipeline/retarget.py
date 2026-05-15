@@ -367,13 +367,16 @@ def _bake_animation(armature, anim: Animation, vrm_metadata: dict) -> None:
     # Note : le mode_set ferme bien le contexte si on est en autre chose
     if bpy.context.mode != "OBJECT":
         bpy.ops.object.mode_set(mode="OBJECT")
-    # anim_format="AMASS" : l'addon applique la rotation X+90° qui convertit
-    # le repère SMPL-X canonique (Y-up, Z-forward) vers le repère Blender (Z-up,
-    # -Y-forward). Notre NPZ contient des poses SMPL-X brutes depuis SMPLer-X,
-    # donc dans le repère SMPL-X canonique → besoin de la conversion.
+    # anim_format="SMPL-X" : l'addon n'applique aucune rotation supplémentaire.
+    # On a déjà neutralisé global_orient (poses[:,0:3]=0) et trans (zéros)
+    # parce qu'ils viennent du repère caméra SMPLer-X et donneraient des
+    # rotations/positions parasites. Les body_pose, hand_pose etc. sont des
+    # rotations locales joint→parent, valides telles quelles.
+    # Avec "AMASS", l'addon ajouterait sa propre conversion X+90° qui tilt le
+    # personnage à l'horizontale.
     bpy.ops.object.smplx_add_animation(
         filepath=str(amass_path),
-        anim_format="AMASS",
+        anim_format="SMPL-X",
         target_framerate=target_framerate,
     )
 
